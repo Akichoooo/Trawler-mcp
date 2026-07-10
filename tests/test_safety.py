@@ -112,3 +112,18 @@ def test_hot_reloading_sensitive_words(tmp_path, monkeypatch):
     sanitized_2 = safety.sanitize_markdown(text_2)
     assert "classified document" not in sanitized_2
     assert "[MASKED_SECRET]" in sanitized_2
+
+
+def test_safety_toggles(monkeypatch):
+    from trawler import config
+    
+    # 1. Disable PII Masking
+    monkeypatch.setattr(config, "ENABLE_PII_MASKING", False)
+    raw_pii = "My phone is 13812345678"
+    assert safety.sanitize_markdown(raw_pii) == raw_pii
+
+    # 2. Disable Sensitive Word Filtering
+    monkeypatch.setattr(config, "ENABLE_WORD_FILTER", False)
+    raw_sensitive = "这是一个测试色情的低俗句子"
+    assert "色情" in safety.sanitize_markdown(raw_sensitive)
+

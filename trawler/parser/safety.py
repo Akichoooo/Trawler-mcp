@@ -238,10 +238,13 @@ def sanitize_markdown(md: str) -> str:
     md = INJECTION_PHRASES_RE.sub(replace_injection_phrase, md)
 
     # ④ PII 脱敏掩码
-    md = mask_pii(md)
+    from trawler import config
+    if getattr(config, "ENABLE_PII_MASKING", True):
+        md = mask_pii(md)
 
     # ⑤ 词库敏感词掩码脱敏
-    md = mask_sensitive_words(md)
+    if getattr(config, "ENABLE_WORD_FILTER", True):
+        md = mask_sensitive_words(md)
 
     return md
 
