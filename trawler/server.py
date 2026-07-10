@@ -1877,6 +1877,11 @@ def main() -> None:
     on_startup()
     import os
     transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "sse":
+        mcp.settings.host = os.getenv("FASTMCP_HOST", "0.0.0.0")
+        mcp.settings.port = int(os.getenv("FASTMCP_PORT", "8000"))
+        if os.getenv("FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION", "true").lower() == "false":
+            mcp.settings.transport_security = None
     mcp.run(transport=transport)
 
 
