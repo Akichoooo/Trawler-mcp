@@ -74,3 +74,30 @@ session = AsyncSession(
 - 系统会在启动时从 `data/site_rules/*.yaml` 动态加载规则。
 - 匹配到目标域名（如 `twitter.com`）时，可以硬性指定 `gear_hint` 强制直通 Rung 1 (patchright)，跳过毫无意义的 Rung 0 挣扎。
 - 也可定义 `wait_strategy: "networkidle"` 让复杂 SPA 应用充分渲染后再抽取 DOM。
+
+## 6. 内容安全与防御层 (Content Safety & Defense Module)
+
+为了对抓取内容进行安全合规审计并防止下游 Agent 被恶意网页内容劫持（间接提示词注入攻击），Trawler 引入了开箱即用的内容安全防护层。
+
+### 6.1 拦截与防注入逻辑
+源码位置：[`trawler/parser/safety.py`](file:///d:/.//trawler/parser/safety.py)
+
+1. **聊天控制 Token 消除**：恶意网页可能会植入类似 `<|im_start|>` 等特殊标识符欺骗 LLM 提前终止当前对话或模拟系统发言。系统通过 `CONTROL_TOKENS_RE` 对这些控制字符进行转义破坏。
+2. **仿冒系统标签转义**：检测 `FAKE_SYSTEM_TAGS_RE`（如 `<system>`, `<instruction>`），将其转换为普通的展示实体。
+3. **零宽空格 (ZWS) 指令干扰**：在敏感指令前缀（如 `ignore instructions`）中间植入 `\u200b`，切碎 LLM Tokenizer，破坏大模型的指令语义而保持人眼可读。
+
+### 6.2 敏感信息 (PII) 智能脱敏
+系统使用高并发优化的正则表达式识别并脱敏以下敏感数据：
+- **中国大陆手机号**：匹配 `PHONE_RE` 并替换中间四位为 `****`。
+- **中国大陆身份证**：匹配 `ID_CARD_RE` 拦截 18 位号码，保留前六位区域及尾部两位校验码，中间十位（包含生日）以 `**********` 遮蔽。
+- **电子邮箱**：通过 `EMAIL_RE` 将邮箱账户名称的中间字符替换为 `*`，保留第一位、最后一位及域名。
+- **银行卡/信用卡**：匹配 16-19 位卡号并模糊中间部分。
+
+### 6.3 词库热加载 (Hot-Reloading Sensitive Words)
+- **词库文件**：[`data/sensitive_words.txt`](file:///d:/.//data/sensitive_words.txt)
+- **编译级正则匹配**：读取 `sensitive_words.txt` 后，程序将其按词长降序（防止短词覆盖）编译为单一正则捕获组。在下一次 Markdown 清洗时，通过正则的替换，自动屏蔽包含 `TOXIC`, `COMPLIANCE`, `JAILBREAK`, `CUSTOM` 等类别的词组。
+- **检测 `mtime` 触发**：系统每次执行内容提取前，通过 `os.path.getmtime` 校验词库文件，检测到变更时自动重新载入内存，做到零重启实时维护。
+
+### 6.4 安全过滤挂载点
+- **HTML DOM 前置清洗**：在 [`trawler/parser/extract.py:L43`](file:///d:/.//trawler/parser/extract.py#L43) 调用 `safety.sanitize_html_soup()`，移除含有 `display:none`、`visibility:hidden` 以及 `font-size:0px` 等隐藏样式的元素，防止其在背景中注入隐藏指令。
+- **Markdown 最终净化**：在 [`trawler/parser/extract.py:L58`](file:///d:/.//trawler/parser/extract.py#L58) 返回最终文本前，对其整体应用 `safety.sanitize_markdown()` 掩码过滤。
