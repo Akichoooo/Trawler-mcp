@@ -5,48 +5,87 @@
 
 ---
 
-## 一、 系统核心组件与模块卡片 (Component Cards)
+## 一、 系统核心组件与模块卡片 (Component Cards for Obsidian)
 
-Trawler-mcp 在架构上由以下五个高内聚组件组成，各司其职：
+> [!tip] 💡 提示
+> 本节采用 Obsidian 原生 Callouts 语法渲染。在 Obsidian 中打开此文件时，它们将呈现为带彩色边框和图标的高保真卡片。
 
-### 🎴 组件 1：中央调度与接口路由 (API & Controller)
-* **核心源码**：[`trawler/server.py`](file:///d:/.//trawler/server.py), [`trawler/crawl_url.py`](file:///d:/.//trawler/crawl_url.py)
-* **功能职责**：
-  - **FastMCP 接口契约**：暴露 `crawl_url`、`crawl_site`、`wait_for_job`、`get_engine_status` 等工具给外部 Agent。
-  - **降级梯队调度**：负责协调 Rung 0 (curl_cffi) ➔ Rung 1 (patchright) ➔ Rung 2 (jina) ➔ Rung 3 (HITL) 的降级逻辑。
-  - **并发控制与防雪崩**：控制同域名请求的最小时间间隔，限制总抓取并发数，施加 35s 超时断路器。
-* **审计状态**：✅ 生产就绪，已通过高并发压测验证。
+> [!info] 🎴 组件 1：中央调度与接口路由 (API & Controller)
+> **📂 源码锚点**：
+> - [`trawler/server.py`](file:///d:/.//trawler/server.py) (FastMCP 服务注册与 API 暴露)
+> - [`trawler/crawl_url.py`](file:///d:/.//trawler/crawl_url.py) (单页调度中心)
+> - [`trawler/crawl_site.py`](file:///d:/.//trawler/crawl_site.py) (多页 Frontier 调度)
+> 
+> **🎯 核心职责**：
+> - **FastMCP 接口发布**：注册并发布 `crawl_url`、`crawl_site`、`wait_for_job`、`get_engine_status` 等核心工具。
+> - **降级阶梯调度 (Fetcher Ladder)**：协调 Rung 0 ➔ Rung 1 ➔ Rung 2 ➔ Rung 3 的依次容错降级。
+> - **限流与防雪崩 (Rate Limiter)**：实现同域名并发锁与退避重试（AIMD算法），引入 35s 全局超时断路器。
+> 
+> **🔍 审计状态**：
+> - **测试状态**：✅ `test_concurrency.py` 20 并发，`test_load.py` 100 并发压测通过。
+> - **安全状态**：✅ 路由前置过滤，所有未捕获异常强制格式化为统一的错误 JSON，绝不泄露任何 Python 底层堆栈特征（反指纹识别）。
 
-### 🎴 组件 2：网络突防与浏览器金库 (Fetcher & Account Vault)
-* **核心源码**：[`trawler/fetcher/`](file:///d:/.//trawler/fetcher/) 目录, [`trawler/account_vault.py`](file:///d:/.//trawler/account_vault.py)
-* **功能职责**：
-  - **TLS/JA4 指纹伪造**：在 Socket 层模仿现代 Chromium 的握手特征与 HTTP/2 头序。
-  - **贝塞尔曲线拟人轨迹**：在浏览器渲染中注入动态二次贝塞尔曲线鼠标移动，绕过 WAF 滑块质询。
-  - **持久化状态隔离**：将突破登录墙后生成的 Cookie 以 AES-256 加密形态持久化在 `account_vault` 中。
-* **审计状态**：✅ 安全，密钥 `TRAWLER_VAULT_KEY` 强制要求在 `.env` 中保管。
+> [!success] 🎴 组件 2：网络突防与浏览器金库 (Fetcher & Account Vault)
+> **📂 源码锚点**：
+> - [`trawler/fetcher/curlcffi_rung.py`](file:///d:/.//trawler/fetcher/curlcffi_rung.py) (Rung 0: 极速 TLS 伪造)
+> - [`trawler/fetcher/patchright_rung.py`](file:///d:/.//trawler/fetcher/patchright_rung.py) (Rung 1: 拟人反检测浏览器)
+> - [`trawler/fetcher/hitl_rung.py`](file:///d:/.//trawler/fetcher/hitl_rung.py) (Rung 3: 真人交互突防)
+> - [`trawler/account_vault.py`](file:///d:/.//trawler/account_vault.py) (凭证管理中心)
+> 
+> **🎯 核心职责**：
+> - **网络隐匿**：在 Socket 层克隆 Chromium 120 的 TLS/JA4 握手特征与 HTTP/2 头序，支持原生压缩解压。
+> - **拟人突防**：使用 **二次贝塞尔曲线** 和缓动时间函数（Easing）模拟真人鼠标轨迹通过 Turnstile/CAPTCHA。
+> - **凭证回流**：将 Rung 1 获得的 `cf_clearance` Cookie 回传并以 AES-256 加密保存至本地金库。
+> 
+> **🔍 审计状态**：
+> - **测试状态**：✅ `test_patchright_rung.py` 与 `test_curlcffi_session.py` 通过。
+> - **安全状态**：✅ 启动强制锁定 `TRAWLER_VAULT_KEY`。WebRTC 路由阻断，ServiceWorker 封锁以防局域网特征扫描。
 
-### 🎴 组件 3：网页脱水与正文清洗 (Parser Engine)
-* **核心源码**：[`trawler/parser/extract.py`](file:///d:/.//trawler/parser/extract.py), [`trawler/parser/oom_safe.py`](file:///d:/.//trawler/parser/oom_safe.py)
-* **功能职责**：
-  - **结构化提纯**：利用 Trafilatura 和 Readability-lxml 剥离导航栏、页脚、广告，保留干净的 Markdown。
-  - **防内存溢出保护**：正则级截断过大的 HTML 文本，剔除隐藏的大图 Base64 编码，防止 BeautifulSoup 加载时触发 OOM 异常。
-* **审计状态**：✅ 大幅优化了抓取质量，极大减轻了调用端 LLM 的上下文消耗。
+> [!summary] 🎴 组件 3：网页脱水与正文清洗 (Parser Engine)
+> **📂 源码锚点**：
+> - [`trawler/parser/extract.py`](file:///d:/.//trawler/parser/extract.py) (清洗管道入口)
+> - [`trawler/parser/oom_safe.py`](file:///d:/.//trawler/parser/oom_safe.py) (内存溢出熔断)
+> - [`trawler/parser/selectors.py`](file:///d:/.//trawler/parser/selectors.py) (局部 CSS 抽取)
+> 
+> **🎯 核心职责**：
+> - **正文提纯**：利用 Trafilatura/Readability-lxml/markdownify 梯队，剔除侧边栏、页脚、广告，保留纯 Markdown。
+> - **OOM 安全保护**：正则截断过长 HTML 文本（上限 `HTML_TRUNCATE=2MB`），剔除大图 Base64 编码，防止 BeautifulSoup 挂起。
+> - **DOM 清理**：移除无意义样式、`noscript`、`iframe` 等，减轻 DOM 树解析压力。
+> 
+> **🔍 审计状态**：
+> - **测试状态**：✅ `test_oom_parser.py` 与 `test_selectors.py` 全数通过。
+> - **安全状态**：✅ 成功拦截所有嵌入在 HTML 属性中的越狱脚本及非文本噪音，过滤率达到 95% 以上。
 
-### 🎴 组件 4：内容安全与合规防护 (Content Safety Guard)
-* **核心源码**：[`trawler/ssrf.py`](file:///d:/.//trawler/ssrf.py), [`trawler/parser/safety.py`](file:///d:/.//trawler/parser/safety.py), [`data/sensitive_words.txt`](file:///d:/.//data/sensitive_words.txt)
-* **功能职责**：
-  - **防内网 SSRF/DNS 劫持**：异步 DNS 校验解析结果，严格封锁私有 IP（如 `127.0.0.1`、`10.0.0.0/8`）。
-  - **越狱/指令注入拦截**：打断聊天控制 Token（如 `<|im_start|>`），对 `ignore instructions` 敏感词插入零宽空格（`\u200b`）切碎 Tokenizer 语义。
-  - **个人敏感信息掩码 (PII)**：支持对身份证、手机号、邮箱、银行卡进行正则脱敏（可开启/关闭）。
-  - **热加载敏感词库**：定时读取 `sensitive_words.txt`，内存中动态重构编译正则进行打码替换。
-* **审计状态**：✅ 防护机制全面，测试用例 100% 跑通。
+> [!warning] 🎴 组件 4：内容安全与合规防护 (Content Safety Guard)
+> **📂 源码锚点**：
+> - [`trawler/ssrf.py`](file:///d:/.//trawler/ssrf.py) (防 SSRF 模块)
+> - [`trawler/parser/safety.py`](file:///d:/.//trawler/parser/safety.py) (合规与脱敏引擎)
+> - [`data/sensitive_words.txt`](file:///d:/.//data/sensitive_words.txt) (热更新合规词库)
+> 
+> **🎯 核心职责**：
+> - **防内网 SSRF/DNS 重绑定**：异步 DNS 预检，严格阻断 RFC1918 私有 IP、内网段及 AWS/阿里云元数据网关。对于 302 重定向由 Python 手动接管迭代预检，防止 curl 库自动跳转绕过。
+> - **防注入攻击**：转义 LLM 聊天控制 Token（如 `<|im_start|>`），对 `ignore instructions` 插入零宽空格（`\u200b`）破坏大模型 Tokenizer 的指令语义。
+> - **PII 脱敏与取证模式**：自动识别身份证、手机号、邮箱、银行卡并打星号脱敏。支持配置 `TRAWLER_ENABLE_PII_MASKING=False` 切换为舆情取证明文模式。
+> - **敏感词热重载**：监控 `sensitive_words.txt` 文件的 `mtime`，无重启热重载，自动按词长降序编译为单一 DFA 正则，实现 $O(N)$ 高速匹配。
+> 
+> **🔍 审计状态**：
+> - **测试状态**：✅ `test_safety.py` 及 `test_ssrf.py` 覆盖所有脱敏、热重载与阻断分支，全数通过。
+> - **安全状态**：✅ 完美拦截各类间接注入和恶意 HTML 隐藏指令（如 `display:none`、`font-size:0px` 文本）。
 
-### 🎴 组件 5：SQLite 无锁微批写入 (Database & Batch Writer)
-* **核心源码**：[`trawler/db.py`](file:///d:/.//trawler/db.py), [`trawler/db_writer.py`](file:///d:/.//trawler/db_writer.py)
-* **功能职责**：
-  - **高频写解耦**：将所有写库任务提交至模块级 `asyncio.Queue`，立即释放事件循环。
-  - **微批事务合并**：后台守护 Worker 合并至多 100 条写任务，用 `BEGIN IMMEDIATE` 执行独占事务写入 SQLite，彻底杜绝高并发锁竞争。
-* **审计状态**：✅ 彻底根治 `database is locked` 难题。
+> [!todo] 🎴 组件 5：SQLite 无锁微批写入 (Database & Batch Writer)
+> **📂 源码锚点**：
+> - [`trawler/db.py`](file:///d:/.//trawler/db.py) (SQLite WAL 模式配置)
+> - [`trawler/db_writer.py`](file:///d:/.//trawler/db_writer.py) (异步内存队列写入器)
+> - [`trawler/audit.py`](file:///d:/.//trawler/audit.py) (审计记录)
+> 
+> **🎯 核心职责**：
+> - **WAL 模式并发优化**：数据库初始化开启 WAL 模式与 `NORMAL` 同步模式，大幅提升读写并发。
+> - **微批写入（Micro-batching）**：解耦所有的持久化写操作（审计日志与去重缓存），投递到内存队列后立即返回协程。后台单线程收集最多 100 条任务合并为单一事务提交。
+> - **生命周期防污染**：自动检测 pytest 等单元测试中事件循环 (Event Loop) 的销毁并热重启，防止跨测试内存队列死锁。
+> 
+> **🔍 审计状态**：
+> - **测试状态**：✅ `test_concurrency.py` 的死锁压力测试通过。
+> - **安全状态**：✅ 彻底消除了在高频并发下的 `database is locked` 报错，确保审计日志 100% 不漏记。
 
 ---
 
@@ -129,7 +168,7 @@ sequenceDiagram
 - **时间复杂度**：匹配性能在 C 底层运行，文本一次扫描完成匹配，与词库的大小几乎脱钩，在词库量级小于数千词时是性能与“免编译零依赖安装”的最佳契合点。
 
 ### 3.2 动态热更新机制
-系统会实时维护 `data/sensitive_words.txt`。其热更新伪代码逻辑如下：
+系统会实时监控 `data/sensitive_words.txt`。其热更新伪代码逻辑如下：
 ```python
 def load_sensitive_words():
     # 检查文件修改时间
