@@ -1867,6 +1867,16 @@ def on_startup() -> None:
     finally:
         conn.close()
     signals.install_handlers()
+    # 打印内容安全防护状态，方便开发者与 Agent 审计
+    pii_status = "【已开启】(所有手机、身份证、邮箱等敏感数据均已应用掩码)" if config.ENABLE_PII_MASKING else "【已关闭】(默认放行网页原始手机、身份证、邮箱等取证/分析数据)"
+    word_status = "【已开启】" if config.ENABLE_WORD_FILTER else "【已关闭】"
+    from trawler.parser import safety
+    words_cache, _ = safety.load_sensitive_words()
+    log.info("=" * 60)
+    log.info("Trawler 内容安全防护与合规模块初始化：")
+    log.info("  - 个人敏感信息脱敏 (PII Masking): %s", pii_status)
+    log.info("  - 违规敏感词库过滤 (Word Filter): %s (已加载 %d 个词汇规则，修改 data/sensitive_words.txt 即时热更新)", word_status, len(words_cache))
+    log.info("=" * 60)
     log.info("Trawler MCP server ready (patchright=%s, data=%s)",
              __import__("trawler.fetcher.patchright_rung", fromlist=["PATCHRIGHT_AVAILABLE"]).PATCHRIGHT_AVAILABLE,
              config.DATA_DIR)
