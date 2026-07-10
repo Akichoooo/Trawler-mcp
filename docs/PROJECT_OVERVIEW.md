@@ -1,0 +1,488 @@
+# Trawler MCP 项目总览
+
+整理时间：2026-07-07
+
+Trawler 现在最准确的定位是：**给 AI 用的真实浏览器内容获取层**。
+
+它仍然是一个 MCP server，但核心业务已经不只是“抓网页并返回 markdown”，而是变成了：
+
+> 让 AI 能像真实用户一样，通过可见浏览器、账号态、人机协作、页面操作、截图/元素选择等方式，定向获取当前页面里的内容。
+
+这个方向很关键：Trawler 不是做隐身绕过，也不是暴力爬虫。遇到登录、验证码、风控、复杂 SPA、瀑布流、局部 UI 内容时，它应该把浏览器交给人处理，或者让 AI 执行明确的页面动作，然后从这个真实页面状态里提取内容。
+
+## 产品定位
+
+Trawler 面向的是 AI agent，而不是普通终端用户。MCP 工具层给 AI 提供一组可审计、边界清楚的能力：
+
+- 单页内容获取；
+- 多页站点爬取；
+- 可见浏览器会话；
+- AI 或人工操作页面后再提取；
+- 登录态加密复用；
+- 站点经验沉淀；
+- 账号画像管理；
+- 调试证据留存。
+
+它的核心价值不是“能不能偷偷绕过网站”，而是：
+
+- 用户明确授权；
+- 用户真的能访问这个页面；
+- Trawler 帮 AI 操作真实浏览器；
+- 必要时让人登录、扫码、验证、点击、选择区域；
+- 最后把 AI 需要的内容结构化取出来。
+
+## 我们这几轮做成了什么
+
+### 1. 用户授权浏览器获取
+
+`retrieve_page` 和 `crawl_url` 支持用户授权访问模式：
+
+- `retrieve_page(access_mode="user_authorized")`
+- `crawl_url(user_authorized_access=true)`
+
+这个模式表示：用户明确要求获取某个单页，并且用户自己有权在浏览器里访问它。
+
+它的行为是：
+
+- 这是单页任务，不是大规模爬取；
+- 会跳过该单页的 robots 预检查；
+- SSRF 防护仍然保留；
+- 优先使用真实浏览器路径；
+- 不使用外部 Jina reader 兜底；
+- 遇到登录、验证、人机操作时进入 HumanAssist。
+
+### 2. Live Browser 可见浏览器工作流
+
+现在已经有一组完整的 live browser MCP 工具：
+
+- `open_browser_session`
+- `connect_browser_session`
+- `list_browser_sessions`
+- `run_browser_actions`
+- `start_element_picker`
+- `start_region_picker`
+- `extract_browser_session`
+- `close_browser_session`
+
+这组工具是整个项目的核心。它支持：
+
+- 打开一个可见浏览器；
+- 连接用户已有 Chrome/Chromium；
+- 人工登录、扫码、过验证；
+- AI 执行点击、输入、滚动、等待、跳转；
+- 人工点选某个元素；
+- 人工框选页面区域；
+- 从当前页面状态里提取内容；
+- 关闭时保存加密账号态。
+
+适合的场景包括：
+
+- 微博、小红书、BOSS、知乎等登录或风控站点；
+- 复杂瀑布流；
+- 仪表盘；
+- 电商/招聘/社交 feed；
+- 文章页面之外的 UI 内容；
+- 需要用户指定“就取这里”的页面。
+
+### 3. 多种页面提取模式
+
+`extract_browser_session` 现在支持这些模式：
+
+- `page`：整页 markdown；
+- `visible_text`：渲染后的可见文本；
+- `selector`：CSS selector 定向提取；
+- `screenshot`：截图；
+- `html`：当前 DOM HTML；
+- `element_snapshot`：元素 HTML + 关键 computed CSS；
+- `picked_element`：人工点选元素；
+- `picked_region`：人工框选区域；
+- `page_clone`：有限 DOM/CSS 结构快照；
+- `accessibility_snapshot`：无障碍语义树；
+- `visible_blocks`：可见卡片/列表/瀑布流内容块；
+- `fit_markdown`：带引用的压缩 markdown；
+- `bundle`：多视角综合包。
+
+对困难网页，最重要的是：
+
+- `bundle`：给 AI 一个综合视角；
+- `visible_blocks`：抓 SPA feed、瀑布流、卡片列表；
+- `picked_element` / `picked_region`：人来指定目标；
+- `element_snapshot`：适合复刻某个 UI 块；
+- `page_clone`：适合后续“按 CSS/结构模仿一个页面”。
+
+### 4. Browser Adapter 浏览器适配层
+
+浏览器实现已经从业务逻辑里拆出来，放在 `trawler/browser_adapter.py`。
+
+现在支持：
+
+- 本地持久化浏览器；
+- 连接已有浏览器 CDP；
+- 浏览器 route 级 SSRF 防护；
+- 默认只允许 localhost CDP；
+- `TRAWLER_ALLOW_REMOTE_CDP` 才允许远程 CDP；
+- route guard 安装失败时默认拒绝打开；
+- `TRAWLER_ALLOW_UNGUARDED_BROWSER` 只给可信环境兜底。
+
+这让 MCP 工具层保持薄，浏览器实现后续可以继续升级。
+
+### 5. SIP：站点智能画像
+
+SIP 全称是 **Site Intelligence Profile**，中文叫 **站点智能画像**。
+
+它不是白皮书，更像是“AI 用的站点操作记忆”。
+
+它记录：
+
+- 站点页面特性；
+- 推荐提取方式；
+- 是否需要人工辅助；
+- 哪些模式验证过；
+- 已知限制；
+- 观察时间和复核时间。
+
+AI 在处理困难站点前，应该先调用：
+
+```text
+get_site_profile(domain)
+```
+
+比如小红书这类站点，SIP 可以告诉 AI：优先考虑 `bundle`、`visible_blocks`、截图、人工选择，而不是只用文章 markdown 抽取。
+
+### 6. Account Profile Registry：账号画像登记表
+
+账号画像登记表英文名是 **Account Profile Registry**，中文名是 **账号画像登记表**。
+
+它记录的是账号元数据，不是密码。
+
+保存内容包括：
+
+- `domain`：站点域名；
+- `account_id`：账号标识，比如 `default`、`work`、`personal`；
+- `label`：给人看的账号备注；
+- `status`：`active`、`expired`、`needs_login`、`blocked`；
+- `login_method`：`manual_qr`、`manual_password`、`imported_state`；
+- `profile_dir`；
+- `storage_state_path`；
+- `cookie_jar_path`；
+- `last_verified_at`；
+- `expires_at`；
+- `notes`；
+- `risk_flags`；
+- `is_default`。
+
+它明确不保存：
+
+- 明文密码；
+- 短信验证码；
+- OTP seed；
+- recovery code；
+- 任何原始 secret。
+
+真正的浏览器 storage_state 和 cookies 仍然放在 `account_vault`，并且需要 `TRAWLER_VAULT_KEY` 加密。
+
+默认账号兼容旧路径：
+
+```text
+data/account_vault/<domain>/profile/
+data/account_vault/<domain>/storage_state.json.enc
+data/account_vault/<domain>/auto_cookies.json.enc
+```
+
+命名账号隔离到单独目录：
+
+```text
+data/account_vault/<domain>/accounts/<account_id>/profile/
+data/account_vault/<domain>/accounts/<account_id>/storage_state.json.enc
+data/account_vault/<domain>/accounts/<account_id>/auto_cookies.json.enc
+```
+
+这样同一个网站可以有多个真实账号，不会把 cookies、浏览器 profile、代理身份混在一起。
+
+### 7. Retrieval Readiness：获取准备度报告
+
+现在新增了：
+
+```text
+get_retrieval_readiness(target, account_id?, access_mode?)
+```
+
+它是 AI 调用前的“路线判断工具”，会把这些信息合成一份报告：
+
+- URL / domain 解析结果；
+- SIP 站点智能画像；
+- 当前域名有哪些账号画像；
+- 选中的 `account_id`；
+- 账号是否可自动使用；
+- vault 是否启用；
+- 是否存在加密 storage_state；
+- 是否存在 cookie jar；
+- 推荐下一步工具；
+- 推荐 `human_assist`；
+- 推荐提取模式；
+- 推荐的下一次 MCP 调用参数。
+
+它的价值是：AI 不需要盲试，可以先判断应该走普通 `retrieve_page`，还是应该打开可见浏览器，还是需要先注册/修复账号画像。
+
+### 8. 账号状态参与自动选择
+
+账号画像状态现在不只是记录，而是会影响自动路径：
+
+- `active` 且未过期：可以自动使用；
+- `expired`：不再自动注入旧 storage_state，转向人工登录/刷新；
+- `needs_login`：转向可见浏览器登录；
+- `blocked`：不会被自动选为默认账号；
+- 显式指定账号时，可以打开浏览器做人工恢复；
+- 旧登录态被检测失效时，会把账号标记为 `expired`。
+
+这个改动解决的是“账号库有旧 cookie，但其实已经不能用了”的问题。
+
+### 9. BrowserAction 审计
+
+`run_browser_actions` 和 `extract_browser_session(actions=...)` 执行页面动作时，现在会写入审计记录：
+
+- tool：`browser_action`；
+- status：`ok`、`failed`、`blocked-ssrf`；
+- url：当前页面 URL；
+- rung_used：动作序号和动作类型，比如 `0:click`。
+
+审计里不会保存输入文本，所以 `fill` / `type` 的具体内容不会写入 audit，避免把账号、密码、搜索词等敏感内容落库。
+
+## 推荐使用流程
+
+### 调用前先判断路线
+
+```text
+get_retrieval_readiness("https://www.xiaohongshu.com/...", account_id="work")
+```
+
+根据返回的 `recommendation.next_call` 决定下一步走：
+
+- `retrieve_page`
+- `open_browser_session`
+- `register_account_profile`
+- `mark_account_profile`
+
+### 普通公开网页
+
+```text
+retrieve_page(url, access_mode="standard")
+```
+
+或者旧接口：
+
+```text
+crawl_url(url)
+```
+
+### 明确要访问登录页面
+
+```text
+register_account_profile(domain="xiaohongshu.com", account_id="work")
+open_browser_session(url="https://www.xiaohongshu.com/...", account_id="work")
+```
+
+然后人来：
+
+- 登录；
+- 扫码；
+- 过验证；
+- 滚动；
+- 点开详情；
+- 调整页面状态。
+
+再让 AI 提取：
+
+```text
+extract_browser_session(session_id, extract_mode="bundle")
+close_browser_session(session_id)
+```
+
+关闭或提取时，会把该账号的浏览器状态加密保存，并更新账号画像的 `last_verified_at`。
+
+### 用户已经有浏览器登录好了
+
+先让用户用本地 Chrome 开启 CDP，然后：
+
+```text
+connect_browser_session(
+  cdp_url="http://127.0.0.1:9222",
+  url=target_url
+)
+extract_browser_session(session_id, extract_mode="bundle")
+close_browser_session(session_id)
+```
+
+默认只允许本机 CDP，避免把远程浏览器控制口暴露成安全风险。
+
+### 人工指定页面元素
+
+```text
+open_browser_session(url, account_id="default")
+start_element_picker(session_id)
+```
+
+人点击目标元素后：
+
+```text
+extract_browser_session(session_id, extract_mode="picked_element")
+```
+
+适合“就取这个卡片/这个评论/这个价格/这个职位信息”。
+
+### 人工框选页面区域
+
+```text
+start_region_picker(session_id)
+```
+
+人拖一个矩形区域后：
+
+```text
+extract_browser_session(session_id, extract_mode="picked_region")
+```
+
+适合页面结构复杂、selector 不稳定、或者 AI 需要截图区域辅助理解的场景。
+
+### AI 自动操作页面后提取
+
+```text
+extract_browser_session(
+  session_id,
+  actions=[
+    {"type": "click", "selector": "..."},
+    {"type": "wait_for_selector", "selector": "..."},
+    {"type": "scroll", "y": 900}
+  ],
+  extract_mode="visible_blocks"
+)
+```
+
+支持的动作包括：
+
+- click；
+- fill；
+- type；
+- press；
+- scroll；
+- wait；
+- wait_for_selector；
+- goto；
+- check；
+- uncheck；
+- select_option。
+
+所有跳转仍然会走 URL 规范化和 SSRF 检查。
+
+## 架构地图
+
+| 领域 | 主要文件 | 职责 |
+|---|---|---|
+| MCP 工具层 | `trawler/server.py` | 工具 schema、legacy 字符串协议、structuredContent |
+| 单页产品入口 | `trawler/page_retrieval.py` | 把用户意图转换成抓取/浏览器参数 |
+| 单页抓取流水线 | `trawler/crawl_url.py` | cache、robots、SSRF、fetch ladder、parser、raw 存储 |
+| 抓取阶梯 | `trawler/fetcher/*` | curl_cffi、patchright、Jina、HITL、挑战检测 |
+| 可见浏览器 | `trawler/live_browser.py` | 长会话浏览器、页面动作、提取模式 |
+| 浏览器适配层 | `trawler/browser_adapter.py` | 本地持久浏览器、CDP、route guard |
+| 账号加密态 | `trawler/account_vault.py` | 加密 storage_state 和 cookie jar |
+| 账号画像登记表 | `trawler/account_profiles.py` | 账号元数据、状态、默认账号选择 |
+| 站点智能画像 | `trawler/site_rules.py`、`data/site_rules/*.yaml` | 站点经验、推荐策略、已知限制 |
+| 获取准备度报告 | `trawler/retrieval_readiness.py` | 汇总 SIP、账号画像、vault 状态并推荐下一步 |
+| 多页爬取 | `trawler/crawl_site.py`、`trawler/frontier.py` | 持久化 frontier、任务状态、分页结果 |
+| 存储 | `trawler/raw_store.py`、`trawler/artifacts.py`、`trawler/db.py` | raw markdown、debug artifact、SQLite schema |
+| 安全 | `trawler/ssrf.py`、`trawler/robots.py`、`trawler/prompt_audit.py` | SSRF、robots、非可信内容信号 |
+| 提取 | `trawler/parser/*`、`trawler/link_map.py` | markdown、selector、fit markdown、链接、质量信号 |
+
+## 安全模型
+
+默认策略是保守的：
+
+- SSRF 防护默认开启；
+- 标准抓取默认尊重 robots.txt；
+- 用户授权访问只针对单页，不是大规模绕过；
+- 浏览器 route guard 会拦截内网请求；
+- CDP 默认只允许 localhost；
+- route guard 安装失败默认拒绝打开浏览器；
+- cookies 和 storage_state 必须用 `TRAWLER_VAULT_KEY` 加密；
+- 账号画像登记表只保存元数据，不保存密码；
+- 页面内容全部视为不可信输入；
+- runtime 数据在 `data/` 下，不应提交。
+
+这套设计回答了之前微博 robots 的问题：
+
+- 普通爬虫路径会尊重 robots，所以可能被合规拦截；
+- 用户明确授权的单页浏览器访问，可以走真实浏览器；
+- 遇到登录/验证时，不是绕过，而是让人处理；
+- 处理完以后，AI 从当前真实页面状态取内容；
+- 多页爬取仍然保持策略约束，不因为单页授权而无限扩张。
+
+## 数据模型
+
+SQLite 当前承担这些表：
+
+- domain rules；
+- seen URLs；
+- crawl jobs；
+- frontier requests；
+- audit log；
+- browser sessions；
+- account profiles。
+
+文件系统承担：
+
+- `data/raw/`：抓取结果和 metadata；
+- `data/artifacts/`：失败证据、HTML、截图、调试信息；
+- `data/account_vault/`：浏览器 profile、加密账号态；
+- `data/site_rules/`：站点智能画像 YAML。
+
+## 当前测试基线
+
+验证命令：
+
+```bash
+uv run --extra dev python -m ruff check trawler tests scripts
+uv run --extra dev python -m compileall -q trawler tests
+uv run --extra dev python -m pytest -q
+```
+
+最近一次完整结果：
+
+```text
+181 passed, 3 skipped, 1 warning
+```
+
+这个 warning 是 Windows 下 `curl_cffi` 的 selector thread 提示，是已知提示，不是账号画像或 live browser 改动引入的。
+
+## 现在项目的优点
+
+- MCP 形式是合理的：AI 调工具，而不是每个 agent 自己写浏览器脚本。
+- 浏览器、人机协作、账号态、提取模式已经形成闭环。
+- 对 SPA、feed、瀑布流、卡片 UI 的获取能力明显增强。
+- 账号身份、代理身份、浏览器 profile、cookie jar 已经解耦隔离。
+- SIP 让站点经验能沉淀下来，供后续 AI 判断策略。
+- debug artifacts 能保留证据，不会把大 HTML/图片塞进 MCP 响应。
+- 测试覆盖已经比较宽，可以继续重构。
+
+## 仍然值得继续做的事
+
+这些不是当前阻塞点，但属于后续高价值工作：
+
+1. 按实际验证继续补更多站点 SIP。
+2. 给截图/框选区域增加 OCR 能力。
+3. 写一份“如何启动本地 Chrome CDP”的操作手册。
+4. 增加真实 MCP smoke test 脚本，模拟客户端调用完整工具链。
+5. 给 BrowserAction 审计增加可选 artifact 截图采样。
+6. 后续可以接外部 secret provider，但 Trawler 自己仍然不保存明文密码。
+
+## 推荐阅读顺序
+
+后续你或者别的 AI 进项目，建议按这个顺序看：
+
+1. `docs/PROJECT_OVERVIEW.md`
+2. `DESIGN.md`
+3. `CONTEXT.md`
+4. `docs/SITE_INTELLIGENCE_PROFILE.md`
+5. `docs/ACCOUNT_PROFILE_REGISTRY.md`
+6. `trawler/server.py`
+7. `trawler/live_browser.py`
+8. `trawler/crawl_url.py`

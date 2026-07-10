@@ -1,0 +1,896 @@
+# Trawler MCP 补强路线图总整理
+
+整理时间：2026-07-07
+
+这份文档把前几轮调研、代码审查、开源项目对比和安全架构讨论统一整理成一个后续路线图。它不是“必须全部马上做”的任务清单，而是 Trawler 继续变强时的主索引。
+
+## 当前判断
+
+Trawler 现在已经比较完整了。
+
+它已经不是一个普通爬虫，而是一个给 AI agent 用的真实浏览器内容获取层：
+
+- 能走普通 HTTP 抓取。
+- 能走真实浏览器。
+- 能让人登录、验证、点选元素、框选区域。
+- 能让 AI 执行明确页面动作。
+- 能从当前真实页面状态中提取内容。
+- 能保存账号态，但不保存明文密码。
+- 能记录站点经验。
+- 能记录账号画像。
+- 能保存调试证据。
+- 能做多页 crawl/frontier。
+- 能做 SSRF、robots、CDP、artifact body 等安全限制。
+- 已有统一 Policy Broker 和 readiness 策略判断。
+
+所以后续重点不是“再随便加几个爬取方式”，而是三件事：
+
+1. 把现有厚模块拆深，让后续升级更稳。
+2. 把真实浏览器获取能力做得更像“人看页面、AI 定向取内容”。
+3. 把高安全部署能力补齐，让 Agent 和外网/浏览器能力隔离。
+
+## 已完成的关键补强
+
+### 1. 用户授权单页获取
+
+相关能力：
+
+- `retrieve_page(access_mode="user_authorized")`
+- `crawl_url(user_authorized_access=true)`
+- `human_assist=auto|required|off`
+
+意义：
+
+- 普通 crawl 尊重 robots。
+- 用户明确授权的单页访问可以走真实浏览器。
+- SSRF 仍然保留。
+- 多页 crawl 不因为单页授权而无限扩张。
+
+### 2. Live Browser 工作流
+
+相关工具：
+
+- `open_browser_session`
+- `connect_browser_session`
+- `list_browser_sessions`
+- `run_browser_actions`
+- `observe_browser_session`
+- `start_element_picker`
+- `start_region_picker`
+- `extract_browser_session`
+- `close_browser_session`
+
+意义：
+
+- 人可以在可见浏览器里登录、扫码、验证、点击。
+- AI 可以在已授权页面里执行明确动作。
+- AI 可以先 observe 页面，再决定怎么操作。
+- 最终从真实页面状态提取内容，而不是只读静态 HTML。
+
+### 3. 多视角页面提取
+
+`extract_browser_session` 已支持：
+
+- `page`
+- `visible_text`
+- `selector`
+- `screenshot`
+- `html`
+- `element_snapshot`
+- `picked_element`
+- `picked_region`
+- `page_clone`
+- `accessibility_snapshot`
+- `visible_blocks`
+- `fit_markdown`
+- `bundle`
+
+重点价值：
+
+- `bundle` 给 AI 多视角综合信息。
+- `visible_blocks` 适合 feed、瀑布流、招聘、电商卡片。
+- `picked_element` / `picked_region` 适合人指定“就取这里”。
+- `page_clone` / `element_snapshot` 适合后续复刻页面结构和 CSS。
+
+### 4. Observe 页面观察
+
+新增工具：
+
+```text
+observe_browser_session(session_id, selector="body", max_elements=80)
+```
+
+它返回：
+
+- 可操作元素列表。
+- 稳定 CSS selector。
+- role / name / text。
+- rect 坐标。
+- action hints。
+- accessibility snapshot。
+
+安全点：
+
+- 只观察，不执行动作。
+- 不返回输入框当前 value。
+- 避免密码、验证码、token 被带进 MCP 响应。
+
+这借鉴了 Playwright MCP 的 accessibility-first 思路，也借鉴了 Stagehand 的 `observe -> act -> extract` 流程。
+
+### 5. 账号画像登记表
+
+模块：
+
+- `trawler/account_profiles.py`
+- `trawler/account_vault.py`
+
+相关工具：
+
+- `register_account_profile`
+- `list_account_profiles`
+- `mark_account_profile`
+
+能力：
+
+- 记录 domain/account_id/label/status/login_method/paths/risk_flags。
+- 支持 active、expired、needs_login、blocked。
+- 默认账号和命名账号隔离。
+- 不保存明文密码。
+- storage_state / cookies 由 vault 加密保存。
+
+### 6. 站点智能画像
+
+模块：
+
+- `trawler/site_rules.py`
+- `data/site_rules/*.yaml`
+
+工具：
+
+- `get_site_profile`
+
+用途：
+
+- 记录站点特性。
+- 记录推荐提取模式。
+- 记录是否需要账号。
+- 记录人机协助预期。
+- 记录已知限制和复查时间。
+
+它不是白皮书，更准确叫 Site Intelligence Profile，中文叫“站点智能画像”。
+
+### 7. 获取准备度报告
+
+工具：
+
+```text
+get_retrieval_readiness(target, account_id?, access_mode?)
+```
+
+现在会汇总：
+
+- URL/domain。
+- SIP。
+- account profiles。
+- vault 状态。
+- 推荐下一步工具。
+- 推荐 human_assist。
+- 推荐 extract_mode。
+- `policy_decision`。
+
+意义：
+
+AI 不要盲试，先拿路线图。
+
+### 8. Policy Broker
+
+模块：
+
+- `trawler/policy.py`
+
+新增工具：
+
+- `get_policy_decision`
+
+已覆盖：
+
+- 工具风险等级：low / medium / high / critical。
+- domain allow / deny。
+- live browser 开关。
+- CDP 开关。
+- crawl_site 开关。
+- artifact body gate。
+- max pages hard limit。
+
+相关环境变量：
+
+```bash
+TRAWLER_POLICY_MODE=permissive
+TRAWLER_ALLOWED_DOMAINS=
+TRAWLER_BLOCKED_DOMAINS=
+TRAWLER_ENABLE_LIVE_BROWSER=1
+TRAWLER_ENABLE_CDP=1
+TRAWLER_ENABLE_CRAWL_SITE=1
+TRAWLER_EXPOSE_ARTIFACT_BODIES=0
+```
+
+### 9. Artifact 证据能力
+
+模块：
+
+- `trawler/artifacts.py`
+
+能力：
+
+- 保存失败或采样成功的 HTML。
+- 保存截图。
+- 保存 console。
+- 保存 request failures。
+- 默认 summary 可读。
+- `page.html` body 默认不暴露。
+- 支持清理策略。
+
+### 10. 审计和安全基线
+
+已有基线：
+
+- SSRF 默认开启。
+- 标准 crawl 默认尊重 robots。
+- CDP 默认只允许 localhost。
+- route guard 失败默认拒绝浏览器会话。
+- BrowserAction 审计不记录 typed text。
+- account profile 不保存密码。
+- artifact body 默认不暴露。
+- policy decision 可进入错误响应和 readiness。
+
+## 开源项目调研可借鉴点
+
+### Firecrawl
+
+可借鉴：
+
+- scrape / crawl / map / batch 的产品化入口。
+- Markdown / HTML / screenshot / structured JSON 多格式输出。
+- 异步任务和结果接口。
+
+Trawler 落点：
+
+- 做 batch retrieve。
+- 做更统一的 structured result。
+- 做任务级 dataset。
+
+不建议照搬：
+
+- 托管反爬代理心智。
+- 默认绕过型能力。
+
+### Crawl4AI
+
+可借鉴：
+
+- Fit Markdown。
+- 引用/citation。
+- 内容过滤。
+- CSS/XPath/schema extraction。
+- session/profile/hooks。
+- Docker API secure-by-default。
+
+Trawler 落点：
+
+- Fit Markdown v2。
+- 引用和来源质量增强。
+- extraction hook / registry。
+- 安全默认值继续强化。
+
+不建议照搬：
+
+- 在 core 内直接做 LLM 提取。
+
+### Playwright MCP
+
+可借鉴：
+
+- accessibility snapshot 驱动浏览器操作。
+- 用语义树减少纯视觉依赖。
+- 操作前先观察。
+
+Trawler 落点：
+
+- 已做 `observe_browser_session`。
+- 后续继续增强 actionable element map。
+
+不建议照搬：
+
+- 暴露完整 Playwright 任意能力。
+- 任意 JS 执行。
+
+### Stagehand
+
+可借鉴：
+
+- `observe -> act -> extract`。
+- 动作预览。
+- 动作缓存。
+- 自愈选择器。
+
+Trawler 落点：
+
+- observe 已落地。
+- 后续把成功动作写回 SIP，形成“动作配方”。
+
+不建议照搬：
+
+- Trawler core 内置 LLM 自主浏览。
+- 让网页内容直接指挥 agent 行动。
+
+### Browser Use
+
+可借鉴：
+
+- 浏览器 agent workflow。
+- action history。
+- benchmark / eval。
+
+Trawler 落点：
+
+- 做真实网页 smoke/eval corpus。
+- 做动作链回放和评测。
+
+不建议照搬：
+
+- 把 Trawler 变成自主代操 agent。
+
+### Browserbase / Steel / Browserless
+
+可借鉴：
+
+- 远程浏览器 provider。
+- session lifecycle。
+- debug viewer。
+- request log。
+- replay。
+- 浏览器池和并发治理。
+
+Trawler 落点：
+
+- 做 `RemoteBrowserProvider` seam。
+- 优先支持自托管 Steel / Browserless。
+- Browserbase 作为可选托管 adapter。
+
+不建议默认启用：
+
+- stealth。
+- captcha solving。
+- 住宅代理。
+- 远程保存账号态。
+
+### Crawlee / Apify
+
+可借鉴：
+
+- RequestQueue。
+- Dataset。
+- KeyValueStore。
+- autoscaling。
+- retry/backoff。
+- crash resume。
+
+Trawler 落点：
+
+- frontier/job 工业化。
+- dataset 分页。
+- crawl resume。
+- 流式结果。
+
+### Spider
+
+可借鉴：
+
+- HTTP-first。
+- 必要时才升级浏览器。
+- streaming。
+- WARC/证据归档。
+
+Trawler 落点：
+
+- 继续保持轻量 fetch 优先。
+- browser 是能力升级，不是所有请求默认路径。
+
+## 后续优先级路线图
+
+### P0：已经基本完成
+
+目标：先把安全边界固住。
+
+已完成：
+
+- Policy Broker。
+- high-risk MCP tool policy gate。
+- readiness 返回 policy decision。
+- live browser 开关。
+- CDP 开关。
+- crawl_site 开关。
+- artifact body gate。
+- observe browser。
+- account profile registry。
+- site intelligence profile。
+- browser action audit。
+- secure deployment architecture 文档。
+
+剩余可补小项：
+
+- policy decision 写入 audit_log。
+- `tools/list` 由 Gateway 按权限过滤。
+- job owner/context/TTL 绑定。
+- audit 增加 policy_version、actor、tenant 字段。
+
+### P1：代码结构深化
+
+目标：把当前几个厚模块拆成深 Module。
+
+#### 1. RetrievalPlan Module
+
+涉及：
+
+- `trawler/page_retrieval.py`
+- `trawler/crawl_url.py`
+- `trawler/retrieval_readiness.py`
+
+问题：
+
+`access_mode`、cache、robots、account、human_assist、extract_mode 的决策分散。
+
+建议：
+
+新增 `trawler/retrieval_plan.py`，统一输出：
+
+- fetch path。
+- cache mode。
+- robots policy。
+- account choice。
+- human assist。
+- extraction mode。
+- artifact policy。
+
+收益：
+
+- AI 调用前、server 执行前、测试里都用同一套计划。
+- 减少参数组合漂移。
+
+#### 2. FetchLadderResult + LadderPolicy
+
+涉及：
+
+- `trawler/crawl_url.py`
+- `trawler/fetcher/*`
+
+问题：
+
+fetch ladder 目前用 tuple 和 sentinel string 表达状态。
+
+建议：
+
+新增显式 dataclass：
+
+- `FetchLadderResult`
+- `RungAttempt`
+- `LadderDecision`
+- `ShortCircuitReason`
+
+收益：
+
+- 消除字符串协议脆弱点。
+- artifact_id、session-expired、blocked-ssrf、hitl-required 更清晰。
+
+#### 3. PageExtraction Registry
+
+涉及：
+
+- `trawler/live_browser.py`
+
+问题：
+
+`extract_browser_session` 一个大分支承载十几种模式。
+
+建议：
+
+新增：
+
+- `trawler/page_extraction.py`
+- 每个 extraction mode 一个 adapter。
+- 外层统一处理 artifact、metadata、screenshot、close_after。
+
+收益：
+
+- 新增 OCR、table、visual layout 不会继续堆大 if/elif。
+
+#### 4. BrowserAction Executor
+
+涉及：
+
+- `trawler/live_browser.py`
+
+问题：
+
+action validation、Playwright 调用、SSRF、audit 混在一起。
+
+建议：
+
+新增：
+
+- `BrowserAction`
+- `BrowserActionExecutor`
+- `ActionAuditSink`
+
+收益：
+
+- 审计更稳。
+- 高风险动作确认更容易加。
+- typed text 不落审计的规则更集中。
+
+#### 5. LiveBrowserSessionRegistry
+
+涉及：
+
+- `trawler/live_browser.py`
+
+问题：
+
+global dict、reuse、op_lock、persist、close 都在一个文件。
+
+建议：
+
+新增：
+
+- `trawler/live_session_registry.py`
+
+收益：
+
+- session 复用、关闭、过期清理、并发锁更有 locality。
+
+#### 6. MCP Result Contract Adapter
+
+涉及：
+
+- `trawler/server.py`
+- `trawler/structured.py`
+
+问题：
+
+legacy text、structuredContent、ImageContent 包装重复。
+
+建议：
+
+新增：
+
+- `trawler/mcp_result.py`
+
+收益：
+
+- server.py 更薄。
+- image/text/error 输出一致。
+
+#### 7. BrowserIdentity Module
+
+涉及：
+
+- `account_profiles.py`
+- `account_vault.py`
+- `browser_session.py`
+- `proxy_pool.py`
+
+问题：
+
+domain/account/proxy/storage/fingerprint 的绑定规则分散。
+
+建议：
+
+新增：
+
+- `trawler/browser_identity.py`
+
+收益：
+
+- 避免同站不同账号、不同代理、不同 cookies 混用。
+
+### P2：真实浏览器获取能力增强
+
+目标：把“人能看到的内容，AI 能定向拿到”做得更强。
+
+#### 1. OCR / 视觉提取 Adapter
+
+场景：
+
+- 小红书截图化内容。
+- 图片卡片。
+- 招聘岗位卡片中的图片文字。
+- 验证后页面里的图片化数据。
+- 用户框选区域后只想读图中文字。
+
+建议：
+
+- 新增 `extract_mode="ocr_region"`。
+- 新增 `extract_mode="ocr_screenshot"`。
+- 对 `picked_region` 截图接 OCR。
+
+可选技术：
+
+- PaddleOCR。
+- Surya OCR。
+- Windows 本地 OCR adapter。
+- 外部 OCR provider。
+
+注意：
+
+- OCR 结果也视为不可信网页内容。
+- 不自动识别验证码用于绕过。
+
+#### 2. 表格/列表/卡片结构化
+
+场景：
+
+- BOSS 职位列表。
+- 电商商品列表。
+- 小红书笔记列表。
+- 微博评论流。
+- 仪表盘卡片。
+
+建议：
+
+- `extract_mode="table_snapshot"`。
+- `extract_mode="feed_items"`。
+- visible_blocks 增加 item scoring。
+
+输出：
+
+- item title。
+- item body。
+- item url。
+- rect。
+- selector。
+- confidence。
+
+#### 3. 动作配方沉淀到 SIP
+
+场景：
+
+某个站点每次都要：
+
+1. 点击登录。
+2. 等待二维码。
+3. 人工扫码。
+4. 点击某个 tab。
+5. 滚动加载。
+6. 提取 visible_blocks。
+
+建议：
+
+SIP 增加：
+
+```yaml
+action_recipes:
+  - name: open_search_results
+    actions:
+      - type: click
+        selector: ...
+      - type: wait_for_selector
+        selector: ...
+    extract_mode: visible_blocks
+```
+
+收益：
+
+- AI 不用每次重新摸索页面。
+- 成功经验可复用。
+- 失败时可人工修正。
+
+#### 4. Page Clone / CSS 复刻增强
+
+场景：
+
+用户提到“页面组件 css 模仿出个页面”。
+
+建议：
+
+- page_clone 增加更多 computed styles。
+- 支持局部组件 clone。
+- 支持 asset manifest。
+- 支持 layout tree。
+
+输出：
+
+- DOM tree。
+- computed CSS subset。
+- rect。
+- fonts/colors/spacing。
+- screenshot。
+- asset urls。
+
+### P3：高安全部署能力
+
+目标：把 Trawler 放进安全 Agent 体系，而不是和 Agent 同一信任边界。
+
+推荐架构：
+
+```text
+Agent -> MCP Gateway / Policy Broker -> Trawler MCP -> Worker Sandbox -> Egress Proxy -> Internet
+```
+
+详见：
+
+- `docs/SECURE_DEPLOYMENT_ARCHITECTURE.md`
+
+#### 1. MCP Gateway
+
+职责：
+
+- 认证。
+- 授权。
+- tools/list 过滤。
+- 高危工具确认。
+- actor/tenant/context 注入。
+- policy version 记录。
+
+#### 2. Egress Proxy
+
+职责：
+
+- 所有 HTTP/browser 流量统一出口。
+- 拒绝内网、metadata、localhost。
+- 记录 DNS/IP/redirect。
+- 网络层兜底 SSRF。
+
+#### 3. Worker Sandbox
+
+建议：
+
+- rootless container。
+- readonly rootfs。
+- drop capabilities。
+- seccomp/AppArmor。
+- gVisor/Kata/Firecracker。
+- 结束后清理 profile/tmp。
+
+#### 4. Vault Provider
+
+目标：
+
+- `TRAWLER_VAULT_KEY` 不再直接靠 env。
+- 代理凭据、第三方 API key、浏览器账号态密钥进入外部 Vault/KMS。
+- 支持租约、轮换、吊销。
+
+#### 5. Artifact Quarantine
+
+状态机：
+
+```text
+quarantined -> scanned -> redacted -> approved -> expired
+```
+
+默认：
+
+- 只给 summary。
+- body 读取需要 policy / approval。
+- HTML、截图、console 都视为不可信内容。
+
+### P4：任务工业化
+
+目标：把 crawl/job 从“能跑”升级成“可运营”。
+
+建议：
+
+- crawl resume。
+- dataset 分页。
+- streaming result。
+- job owner/context/TTL。
+- per-domain quota。
+- failure dashboard。
+- retry/backoff 可解释。
+- crawl result diff。
+- WARC-like evidence archive。
+
+### P5：评测和站点画像扩展
+
+目标：让能力演进可验证。
+
+建议：
+
+- 建一个真实站点 smoke corpus。
+- 覆盖 GitHub、Wikipedia、V2EX、知乎、小红书、微博、BOSS、YouTube、Amazon 等类型。
+- 每个站点记录：
+  - 是否需要账号。
+  - 是否需要人机协助。
+  - 推荐 extract_mode。
+  - 哪些动作配方有效。
+  - 最近验证时间。
+  - 已知限制。
+
+评测指标：
+
+- 是否拿到主要内容。
+- 链接是否正确。
+- 图片/截图是否可用。
+- 是否误泄敏感输入。
+- 是否遵守策略。
+- 是否产生可审计 artifact。
+
+## 明确不建议做的方向
+
+这些能力短期看起来“强”，但会破坏 Trawler 的边界：
+
+- 默认 stealth。
+- 默认 captcha solving。
+- 默认住宅代理。
+- 默认远程浏览器保存账号态。
+- 暴露任意 Playwright/CDP/JS 执行。
+- 让网页内容直接指挥 agent 行动。
+- Trawler core 内置 LLM 自主浏览。
+- 多页 crawl 因单页授权而绕过 robots/scope。
+- 保存明文密码、OTP seed、recovery code。
+
+正确方向是：
+
+- 用户明确授权。
+- 人能接管。
+- AI 执行明确动作。
+- 所有外网内容视为不可信。
+- 高风险动作可审计、可拒绝、可回放。
+- 账号态加密隔离。
+- 抓取能力和 Agent 信任区隔离。
+
+## 如果继续开工，建议顺序
+
+### 第一组：架构深度
+
+1. `PageExtraction Registry`
+2. `BrowserAction Executor`
+3. `RetrievalPlan`
+4. `FetchLadderResult`
+5. `MCP Result Contract Adapter`
+
+这一组最适合现在做，因为不会依赖外部部署环境，主要提升代码可维护性和后续扩展能力。
+
+### 第二组：内容获取能力
+
+1. OCR region/screenshot。
+2. feed_items/card extraction。
+3. table_snapshot。
+4. page_clone v2。
+5. SIP action_recipes。
+
+这一组最贴近“任何页面都能定向获取内容”的核心目标。
+
+### 第三组：生产安全
+
+1. MCP Gateway。
+2. job owner/context/TTL。
+3. egress proxy adapter。
+4. worker sandbox runner。
+5. vault provider。
+6. artifact quarantine。
+
+这一组需要部署环境配合，适合进入生产化阶段做。
+
+## 当前完成度结论
+
+如果按“本地 MCP 能力 + 真实浏览器获取 + 人工协助 + 账号态 + 安全基线 + 测试覆盖”来看，Trawler 已经比较完善。
+
+如果按“生产级高安全 Agent 外网能力”来看，还需要 Gateway、sandbox、egress proxy、Vault、artifact quarantine 这些部署层能力。
+
+如果按“任何页面内容都尽量可获取”来看，还可以继续补 OCR、feed/card/table extraction、动作配方、页面复刻 bundle。
+
+所以后续不是没有事做，而是进入了第二阶段：
+
+> 从“能抓、能浏览、能提取”，升级到“可治理、可复用、可评测、可生产部署”。
+
+## 当前验证基线
+
+最近一次完整验证：
+
+```text
+ruff: All checks passed
+compileall: passed
+pytest: 191 passed, 3 skipped, 1 warning
+```
+
+warning 是 Windows 下 `curl_cffi` 的 selector thread 提示，属于已知环境提示。

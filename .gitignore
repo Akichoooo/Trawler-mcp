@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# uv / venv
+.venv/
+venv/
+
+# Trawler 运行时数据 (绝不提交)
+data/
+.env
+*.sqlite3
+scratch/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

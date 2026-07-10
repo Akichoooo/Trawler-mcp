@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trawler-mcp 创意提案 | TRAE AI 创造力大赛</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #818cf8;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+    header {
+      text-align: center;
+      padding: 80px 20px 60px;
+      background: radial-gradient(circle at 50% 0%, #1e293b 0%, var(--bg) 70%);
+    }
+    header h1 { font-size: 3rem; margin: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; color: transparent; }
+    header p { font-size: 1.25rem; color: var(--muted); max-width: 640px; margin: 20px auto 0; }
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      font-size: 0.875rem;
+      margin-top: 20px;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+    main { max-width: 880px; margin: 0 auto; padding: 0 20px 80px; }
+    section { background: var(--card); border-radius: 20px; padding: 36px; margin-bottom: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+    section h2 { font-size: 1.5rem; margin-top: 0; color: var(--accent); }
+    section h3 { color: var(--accent-2); margin-top: 24px; }
+    ul { padding-left: 22px; }
+    li { margin-bottom: 10px; }
+    .highlight { color: var(--accent); font-weight: 600; }
+    .pipeline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin: 24px 0;
+    }
+    .step {
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 12px;
+      padding: 16px 20px;
+      min-width: 140px;
+      text-align: center;
+    }
+    .step strong { display: block; color: var(--accent); font-size: 1.1rem; }
+    .step span { color: var(--muted); font-size: 0.85rem; }
+    .arrow { color: var(--muted); font-size: 1.5rem; align-self: center; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+    .value-card {
+      background: rgba(255,255,255,0.03);
+      border-radius: 16px;
+      padding: 24px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .value-card h4 { margin-top: 0; color: var(--success); }
+    footer { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 0.9rem; }
+    code {
+      background: rgba(255,255,255,0.08);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-family: "SF Mono", Consolas, monospace;
+      font-size: 0.9em;
+    }
+    @media (max-width: 640px) {
+      header h1 { font-size: 2rem; }
+      section { padding: 24px; }
+      .arrow { transform: rotate(90deg); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="badge">参赛赛道：学习工作</div>
+    <h1>Trawler-mcp</h1>
+    <p>一个为 LLM / Agent 打造的<b>可信网页爬取 MCP Server</b>。把混乱的互联网变成 LLM 能直接读懂的干净 Markdown，并具备反爬降级、人工兜底与 SSRF 安全防御。</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>1. 创意介绍</h2>
+      <h3>想解决什么问题</h3>
+      <p>当下 Agent IDE（如 TRAE、Cursor）和 RAG 系统需要大量实时网页数据，但现有爬虫工具普遍存在三个问题：<span class="highlight">反爬一碰就碎</span>、<span class="highlight">返回内容噪声大</span>、<span class="highlight">安全与并发不可控</span>。LLM 拿到的是一堆 HTML 标签或失败提示，无法真正“看懂”网页。</p>
+      <h3>灵感来源</h3>
+      <p>在把 TRAE 当作 Agent 开发环境使用时，经常需要让 Agent 读取文档、GitHub Issue、论坛帖子。遇到 Cloudflare 或登录墙时，要么直接失败，要么需要手动复制粘贴，打断了 Agent 的自动流程。因此我们希望有一个“交给 Agent 就能放心用”的网页读取工具。</p>
+      <h3>产品形态</h3>
+      <p><b>Trawler-mcp</b> 是一个基于 <code>MCP（Model Context Protocol）</code> 的网页爬取服务，提供 <code>crawl_url</code>、<code>crawl_site</code> 等工具。它输出干净的 Markdown，内置 patchright → Jina Reader → HITL 三档阶梯、账号库、SSRF 防御、审计日志与“手册学习”机制。</p>
+    </section>
+
+    <section>
+      <h2>2. 核心流程</h2>
+      <div class="pipeline">
+        <div class="step"><strong>URL 输入</strong><span>规范化 + SSRF 初检</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><strong>查手册</strong><span>cached_gear 跳档</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><strong>三档阶梯</strong><span>patchright / Jina / HITL</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><strong>Parser</strong><span>提取正文 Markdown</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><strong>落盘审计</strong><span>raw + audit + seen</span></div>
+      </div>
+      <ul>
+        <li><b>patchright 档：</b>反检测 headless Chrome，注入账号 storage_state，可过 Cloudflare / 复杂 SPA。</li>
+        <li><b>Jina Reader 档：</b>当 patchright 被 Cloudflare 拦截时，快速获取已渲染内容。</li>
+        <li><b>HITL 档：</b>遇到登录/复杂验证码时，弹出浏览器等人过；成功后保存状态供后续复用。</li>
+        <li><b>SSRF 双检：</b>入口 URL + patchright 最终 final_url 都会检查，命中直接阻断。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>3. 目标用户及痛点</h2>
+      <div class="grid-2">
+        <div class="value-card">
+          <h4>Agent / RAG 开发者</h4>
+          <p>需要让 LLM 读取网页，但不想维护 Selenium/Playwright 一堆环境；希望一次接入 MCP 就能用。</p>
+        </div>
+        <div class="value-card">
+          <h4>科研人员 / 分析师</h4>
+          <p>批量跟踪论文、论坛、竞品页面，现有工具遇到反爬就断，缺少自动降级和断点续爬。</p>
+        </div>
+        <div class="value-card">
+          <h4>企业知识库团队</h4>
+          <p>需要把外部公开文档同步到内部系统，对安全（SSRF）、审计、账号隔离有硬性要求。</p>
+        </div>
+        <div class="value-card">
+          <h4>使用场景</h4>
+          <p>竞品监控、论文采集、电商价格跟踪、企业内部知识库同步、Agent 实时联网查询。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. 价值与意义</h2>
+      <ul>
+        <li><b>效率提升：</b>把“让 LLM 能读网页”从数小时自建工作缩短为一条 MCP 命令；多档阶梯自动选择成本最低的成功路径，避免一上来就开浏览器。</li>
+        <li><b>安全可控：</b>通过 SSRF 防御、账号隔离、审计日志，让 Agent 联网行为可审计、可阻断，降低自动化工具被滥用风险。</li>
+        <li><b>生态兼容：</b>基于 MCP 协议，可无缝接入 TRAE、Cursor、Claude Desktop 等任何支持 MCP 的 Agent IDE。</li>
+        <li><b>开放演进：</b>“手册学习”机制让系统根据历史成功率自动选择起手档位，越用越省成本。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>5. 技术栈与当前进展</h2>
+      <ul>
+        <li><b>后端：</b>Python + FastMCP + SQLite（WAL）+ asyncio</li>
+        <li><b>浏览器：</b>patchright / playwright，支持 storage_state 注入</li>
+        <li><b>正文提取：</b>trafilatura / readability-lxml / html2text 多 Parser 兜底</li>
+        <li><b>安全：</b>ipaddress + socket.getaddrinfo 双栈 SSRF 拦截，路径穿越白名单</li>
+        <li><b>当前状态：</b>已完成 crawl_url 单页流水线和 crawl_site 同域蜘蛛爬，含单元测试 19 项全绿。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>项目作者：吴勇 · 参赛作品：Trawler-mcp · TRAE AI 创造力大赛</p>
+    <p>本提案由 TRAE Work 生成并优化</p>
+  </footer>
+</body>
+</html>
