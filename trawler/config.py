@@ -45,7 +45,7 @@ BROWSER_ROUTE_DNS_CACHE_TTL: float = float(os.getenv("TRAWLER_BROWSER_ROUTE_DNS_
 ALLOW_LEGACY_PLAINTEXT_VAULT: bool = _env_bool("TRAWLER_ALLOW_LEGACY_PLAINTEXT_VAULT", False)
 ALLOW_REMOTE_CDP: bool = _env_bool("TRAWLER_ALLOW_REMOTE_CDP", False)
 ALLOW_UNGUARDED_BROWSER: bool = _env_bool("TRAWLER_ALLOW_UNGUARDED_BROWSER", False)
-ENABLE_PII_MASKING: bool = _env_bool("TRAWLER_ENABLE_PII_MASKING", True)
+ENABLE_PII_MASKING: bool = _env_bool("TRAWLER_ENABLE_PII_MASKING", False)
 ENABLE_WORD_FILTER: bool = _env_bool("TRAWLER_ENABLE_WORD_FILTER", True)
 
 # Central MCP policy broker. "permissive" preserves local-dev behaviour while
