@@ -18,7 +18,8 @@ data/
 *.sqlite3
 scratch/
 
-# IDE
+# IDE / 编辑器内部文件 (含会话 ID, 绝不提交)
+.zcode/
 .vscode/
 .idea/
 *.swp
