@@ -36,7 +36,7 @@ def unregister_browser(handle) -> None:
 
 
 def _force_close_all() -> None:
-    """同步强制关闭所有浏览器。best-effort, 不抛。"""
+    """同步强制关闭所有浏览器 + curl_cffi sessions。best-effort, 不抛。"""
     for handle in list(_active_browsers):
         try:
             # patchright/playwright 的 Browser 有 _connection._transport._proc 指向进程
@@ -50,6 +50,13 @@ def _force_close_all() -> None:
         except Exception:
             pass
     _active_browsers.clear()
+    # curl_cffi session pool 清理 (best-effort, 同步上下文无法 await close)
+    try:
+        from trawler.fetcher.curlcffi_rung import _session_pool, _session_pool_keys
+        _session_pool.clear()
+        _session_pool_keys.clear()
+    except Exception:
+        pass
 
 
 def _extract_process(handle):

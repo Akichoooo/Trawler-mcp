@@ -107,6 +107,12 @@ CACHE_TTL_DEFAULT: int = int(os.getenv("TRAWLER_CACHE_TTL_DEFAULT", "21600")) # 
 CONFIDENCE_MIN: float = float(os.getenv("TRAWLER_CONFIDENCE_MIN", "0.5"))
 UNREACHABLE_TTL: int = int(os.getenv("TRAWLER_UNREACHABLE_TTL", "86400"))  # 1d
 
+# ── Circuit Breaker (域级三态熔断) ────────────────────────────────
+# 连续失败 N 次转 open (拒绝请求); OPEN_TTL 后转 half_open (放行探测);
+# 探测成功转 closed (恢复正常); 探测失败转 open (重新计时)。
+CIRCUIT_BREAKER_THRESHOLD: int = int(os.getenv("TRAWLER_CIRCUIT_BREAKER_THRESHOLD", "5"))
+CIRCUIT_BREAKER_OPEN_TTL: int = int(os.getenv("TRAWLER_CIRCUIT_BREAKER_OPEN_TTL", "300"))  # 5min
+
 # ── 提取后正文字数阈值 (L3 双判据之一) ───────────────────────────
 MIN_CONTENT_CHARS: int = int(os.getenv("TRAWLER_MIN_CONTENT_CHARS", "200"))
 

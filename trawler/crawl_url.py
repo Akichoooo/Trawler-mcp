@@ -480,6 +480,12 @@ async def _do_crawl(
         await _db_write(audit.write_audit, conn, tool="crawl_url",
                                  url=url, status="unreachable")
         return _format_error("domain-unreachable", f"Domain {domain} marked unreachable (retry later)")
+
+    # Circuit Breaker: 熔断中的域拒绝请求 (省资源, 防故障扩散)
+    if rules.is_circuit_open(conn, domain):
+        await _db_write(audit.write_audit, conn, tool="crawl_url",
+                                 url=url, status="circuit_open")
+        return _format_error("domain-unreachable", f"Domain {domain} circuit breaker open (retry after {config.CIRCUIT_BREAKER_OPEN_TTL}s)")
     
     wait_strategy = "domcontentloaded"
     wait_for_selector = ""

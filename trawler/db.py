@@ -160,8 +160,20 @@ def init_db(db_path: str | None = None) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """增量 migration (SQLite ALTER TABLE 不支持 IF NOT EXISTS, 需检查列存在)。"""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(domain_rules)").fetchall()}
+    if "circuit_state" not in cols:
+        conn.execute("ALTER TABLE domain_rules ADD COLUMN circuit_state TEXT DEFAULT 'closed'")
+    if "circuit_opened_at" not in cols:
+        conn.execute("ALTER TABLE domain_rules ADD COLUMN circuit_opened_at INTEGER DEFAULT 0")
+    if "consecutive_failures" not in cols:
+        conn.execute("ALTER TABLE domain_rules ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
 
 
 @contextmanager

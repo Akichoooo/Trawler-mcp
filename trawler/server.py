@@ -151,33 +151,37 @@ async def retrieve_page(
     )
     if not decision.allowed:
         return _policy_denied_result(decision)
-    result = await _retrieve_page(
-        url,
-        access_mode=access_mode,
-        account_id=account_id,
-        human_assist=human_assist,
-        extract_mode=extract_mode,
-        selector=selector,
-        use_proxy=use_proxy,
-        cache_mode=cache_mode,
-        timeout=timeout,
-    )
-    content: list[TextContent | ImageContent] = [
-        TextContent(type="text", text=result.legacy_text)
-    ]
-    if result.screenshot is not None:
-        content.append(
-            ImageContent(
-                type="image",
-                data=base64.b64encode(result.screenshot).decode("ascii"),
-                mimeType="image/png",
-            )
+    from trawler.otel import span_context
+    from trawler.tracing import telemetry_context
+    with telemetry_context("retrieve_page", agent_id=account_id or ""), \
+         span_context("retrieve_page", url=url, access_mode=access_mode):
+        result = await _retrieve_page(
+            url,
+            access_mode=access_mode,
+            account_id=account_id,
+            human_assist=human_assist,
+            extract_mode=extract_mode,
+            selector=selector,
+            use_proxy=use_proxy,
+            cache_mode=cache_mode,
+            timeout=timeout,
         )
-    return CallToolResult(
-        content=content,
-        structuredContent=result.structured,
-        isError=False,
-    )
+        content: list[TextContent | ImageContent] = [
+            TextContent(type="text", text=result.legacy_text)
+        ]
+        if result.screenshot is not None:
+            content.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(result.screenshot).decode("ascii"),
+                    mimeType="image/png",
+                )
+            )
+        return CallToolResult(
+            content=content,
+            structuredContent=result.structured,
+            isError=False,
+        )
 
 
 @mcp.tool(
@@ -570,23 +574,27 @@ async def crawl_url(
     )
     if not decision.allowed:
         return _policy_denied_text(decision)
-    return await _crawl_url(
-        url,
-        use_proxy=use_proxy,
-        force_refresh=force_refresh,
-        cache_mode=cache_mode,
-        bypass_robots=bypass_robots,
-        user_authorized_access=user_authorized_access,
-        account_id=account_id,
-        human_assist=human_assist,
-        selector=selector,
-        capture_artifact=capture_artifact,
-        bypass_l3=bypass_l3,
-        timeout=timeout,
-        mode=mode,
-        section_id=section_id,
-        chunk_index=chunk_index,
-    )
+    from trawler.otel import span_context
+    from trawler.tracing import telemetry_context
+    with telemetry_context("crawl_url", agent_id=account_id or ""), \
+         span_context("crawl_url", url=url, account_id=account_id or ""):
+        return await _crawl_url(
+            url,
+            use_proxy=use_proxy,
+            force_refresh=force_refresh,
+            cache_mode=cache_mode,
+            bypass_robots=bypass_robots,
+            user_authorized_access=user_authorized_access,
+            account_id=account_id,
+            human_assist=human_assist,
+            selector=selector,
+            capture_artifact=capture_artifact,
+            bypass_l3=bypass_l3,
+            timeout=timeout,
+            mode=mode,
+            section_id=section_id,
+            chunk_index=chunk_index,
+        )
 
 
 @mcp.tool(
@@ -673,21 +681,25 @@ async def crawl_site_tool(
     )
     if not decision.allowed:
         return _policy_denied_text(decision)
-    result = await crawl_site(
-        start_url,
-        max_pages=max_pages,
-        same_domain_only=same_domain_only,
-        use_proxy=use_proxy,
-        max_depth=max_depth,
-        include_paths=include_paths,
-        exclude_paths=exclude_paths,
-        include_subdomains=include_subdomains,
-        ignore_query_parameters=ignore_query_parameters,
-    )
-    return format_ok(
-        f"Started crawl job: {result['job_id']} (max_pages={result['max_pages']}). "
-        "Use wait_for_job to get results."
-    )
+    from trawler.otel import span_context
+    from trawler.tracing import telemetry_context
+    with telemetry_context("crawl_site"), \
+         span_context("crawl_site", url=start_url, max_pages=max_pages):
+        result = await crawl_site(
+            start_url,
+            max_pages=max_pages,
+            same_domain_only=same_domain_only,
+            use_proxy=use_proxy,
+            max_depth=max_depth,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            include_subdomains=include_subdomains,
+            ignore_query_parameters=ignore_query_parameters,
+        )
+        return format_ok(
+            f"Started crawl job: {result['job_id']} (max_pages={result['max_pages']}). "
+            "Use wait_for_job to get results."
+        )
 
 
 @mcp.tool(
@@ -1817,7 +1829,7 @@ async def recent_scrapes_resource() -> str:
 # ── 启动钩子 ──────────────────────────────────────────────────────
 
 def on_startup() -> None:
-    """启动时: init_db + 清理 + 信号处理。"""
+    """启动时: init_db + 清理 + 信号处理 + OTel + 认证检查。"""
     import os
     if os.getenv("JSON_LOGS"):
         try:
@@ -1828,32 +1840,39 @@ def on_startup() -> None:
 
         import sys
 
-        from trawler.tracing import span_id_var, trace_id_var
-        
+        from trawler.tracing import (
+            agent_id_var, request_id_var, span_id_var, tool_name_var, trace_id_var,
+        )
+
         class TracingFilter(logging.Filter):
+            """注入 trace_id/span_id/tool_name/request_id/agent_id 到每条日志。"""
             def filter(self, record):
-                record.trace_id = trace_id_var.get()
-                record.span_id = span_id_var.get()
+                record.trace_id = trace_id_var.get() or ""
+                record.span_id = span_id_var.get() or ""
+                record.tool_name = tool_name_var.get() or ""
+                record.request_id = request_id_var.get() or ""
+                record.agent_id = agent_id_var.get() or ""
                 return True
 
         # 移除默认的 basicConfig 如果有的话
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
         root_logger.addFilter(TracingFilter())
-        
+
         # 清除已有的 handlers 防重复
         for h in root_logger.handlers[:]:
             root_logger.removeHandler(h)
-            
+
         logHandler = logging.StreamHandler(sys.stderr)
-        # 支持输出 trace_id 等自定义字段，用 jsonlogger 生成结构化输出
+        # 业务富字段: tool_name / request_id / agent_id 供 Loki/Prometheus 聚合
         formatter = JsonFormatter(
-            '%(asctime)s %(levelname)s %(name)s %(message)s %(trace_id)s %(span_id)s',
+            '%(asctime)s %(levelname)s %(name)s %(message)s '
+            '%(trace_id)s %(span_id)s %(tool_name)s %(request_id)s %(agent_id)s',
             timestamp=True
         )
         logHandler.setFormatter(formatter)
         root_logger.addHandler(logHandler)
-        log.info("JSON structured logging enabled with tracing")
+        log.info("JSON structured logging enabled with tracing + telemetry fields")
     else:
         logging.basicConfig(
             level=logging.INFO,
@@ -1867,6 +1886,27 @@ def on_startup() -> None:
     finally:
         conn.close()
     signals.install_handlers()
+
+    # OpenTelemetry 初始化 (可选依赖, 无依赖时降级为 no-op)
+    try:
+        from trawler.otel import init_otel
+        init_otel()
+    except Exception as e:
+        log.warning("OTel init failed (non-fatal): %s", e)
+
+    # 非 stdio transport 认证检查
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport != "stdio":
+        try:
+            from trawler.auth import is_auth_enabled, is_mtls_enabled
+            if is_auth_enabled() or is_mtls_enabled():
+                log.info("Auth middleware enabled (OIDC=%s, mTLS=%s) for transport=%s",
+                         is_auth_enabled(), is_mtls_enabled(), transport)
+            else:
+                log.warning("Non-stdio transport (%s) without auth — exposed to network (set TRAWLER_AUTH_ENABLED=true)", transport)
+        except Exception:
+            pass
+
     # 打印内容安全防护状态，方便开发者与 Agent 审计
     pii_status = "【已开启】(所有手机、身份证、邮箱等敏感数据均已应用掩码)" if config.ENABLE_PII_MASKING else "【已关闭】(默认放行网页原始手机、身份证、邮箱等取证/分析数据)"
     word_status = "【已开启】" if config.ENABLE_WORD_FILTER else "【已关闭】"
@@ -1883,15 +1923,56 @@ def on_startup() -> None:
 
 
 def main() -> None:
-    """入口: 启动 MCP server。"""
+    """入口: 启动 MCP server。支持 stdio / sse / streamable-http 三种 transport。
+
+    非 stdio transport 时, 如启用认证 (TRAWLER_AUTH_ENABLED / TRAWLER_MTLS_ENABLED),
+    用 AuthMiddleware 包裹 ASGI app 校验 Bearer token / mTLS 证书。
+    """
     on_startup()
     import os
     transport = os.getenv("MCP_TRANSPORT", "stdio")
-    if transport == "sse":
+
+    if transport in ("sse", "streamable-http"):
         mcp.settings.host = os.getenv("FASTMCP_HOST", "0.0.0.0")
         mcp.settings.port = int(os.getenv("FASTMCP_PORT", "8000"))
         if os.getenv("FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION", "true").lower() == "false":
             mcp.settings.transport_security = None
+
+    # 认证中间件 (非 stdio transport)
+    if transport in ("sse", "streamable-http"):
+        try:
+            from trawler.auth import AuthMiddleware, is_auth_enabled, is_mtls_enabled
+            if is_auth_enabled() or is_mtls_enabled():
+                # 拿到 FastMCP 的 ASGI app, 包一层 auth middleware
+                try:
+                    asgi_app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
+                except AttributeError:
+                    # FastMCP 版本不支持 *_app() → 降级, 用 mcp.run (无 auth)
+                    log.warning("FastMCP version does not expose ASGI app — auth middleware skipped")
+                    asgi_app = None
+                if asgi_app is not None:
+                    wrapped = AuthMiddleware(asgi_app)
+                    import uvicorn
+                    log.info("Starting %s server with auth middleware on %s:%s",
+                             transport, mcp.settings.host, mcp.settings.port)
+                    # P1: uvicorn 优雅关闭时 await 关闭 curl_cffi session pool
+                    # (SIGTERM 路径的 _force_close_all 是同步 clear, 无法 await close)
+                    server = uvicorn.Server(uvicorn.Config(
+                        wrapped, host=mcp.settings.host, port=mcp.settings.port,
+                    ))
+                    _orig_shutdown = server.shutdown
+                    async def _shutdown_with_curlcffi():
+                        await _orig_shutdown()
+                        try:
+                            from trawler.fetcher.curlcffi_rung import shutdown_sessions
+                            await shutdown_sessions()
+                        except Exception as e:
+                            log.warning("curl_cffi session shutdown failed: %s", e)
+                    server.shutdown = _shutdown_with_curlcffi
+                    server.run()
+                    return
+        except Exception as e:
+            log.warning("Auth middleware setup failed (non-fatal, falling back to mcp.run): %s", e)
     mcp.run(transport=transport)
 
 

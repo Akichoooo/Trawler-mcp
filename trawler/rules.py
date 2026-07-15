@@ -29,6 +29,10 @@ class DomainRule:
     confidence: float = 0.0
     stale: bool = False
     unreachable_until: int = 0
+    # Circuit Breaker 三态: closed (正常) / open (熔断, 拒绝) / half_open (探测中)
+    circuit_state: str = "closed"
+    circuit_opened_at: int = 0
+    consecutive_failures: int = 0
 
 
 def get(conn: sqlite3.Connection, domain: str) -> DomainRule | None:
@@ -52,6 +56,9 @@ def get(conn: sqlite3.Connection, domain: str) -> DomainRule | None:
         confidence=row["confidence"],
         stale=bool(row["stale"]),
         unreachable_until=row["unreachable_until"] or 0,
+        circuit_state=row["circuit_state"] or "closed",
+        circuit_opened_at=row["circuit_opened_at"] or 0,
+        consecutive_failures=row["consecutive_failures"] or 0,
     )
 
 
@@ -63,6 +70,44 @@ def is_unreachable(conn: sqlite3.Connection, domain: str) -> bool:
     if row is None:
         return False
     return int(row["unreachable_until"] or 0) > time.time()
+
+
+def is_circuit_open(conn: sqlite3.Connection, domain: str) -> bool:
+    """Circuit Breaker: 返回 True = 熔断中 (拒绝请求)。
+
+    三态机:
+      closed   → 正常, 放行
+      open     → 熔断, 检查 OPEN_TTL 是否到期; 到期转 half_open (放行探测)
+      half_open → 探测中, 放行 (只允许一个探测请求, 由调用方并发控制)
+    """
+    row = conn.execute(
+        "SELECT circuit_state, circuit_opened_at FROM domain_rules WHERE domain = ?",
+        (domain,),
+    ).fetchone()
+    if row is None:
+        return False
+    state = row["circuit_state"] or "closed"
+    if state == "closed":
+        return False
+    if state == "open":
+        # 检查 OPEN_TTL 是否到期 → 转 half_open
+        opened_at = int(row["circuit_opened_at"] or 0)
+        if opened_at and time.time() - opened_at > config.CIRCUIT_BREAKER_OPEN_TTL:
+            conn.execute(
+                "UPDATE domain_rules SET circuit_state='half_open' WHERE domain = ?",
+                (domain,),
+            )
+            # P2: 状态转换写 audit_log (运维可观测熔断触发频率)
+            try:
+                from trawler import audit
+                audit.write_audit(conn, tool="circuit_breaker", url=domain,
+                                  status="open_to_half_open")
+            except Exception:
+                pass
+            return False  # 转 half_open, 放行探测
+        return True  # 仍在 open, 拒绝
+    # half_open: 放行探测
+    return False
 
 
 def should_use_cached(conn: sqlite3.Connection, domain: str) -> str | None:
@@ -115,8 +160,9 @@ def record_success(
         """
         INSERT INTO domain_rules (domain, gear, selectors, wait_strategy,
             needs_account, needs_proxy, success_count, fail_count,
-            last_success_at, confidence, stale, unreachable_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            last_success_at, confidence, stale, unreachable_until,
+            circuit_state, circuit_opened_at, consecutive_failures)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'closed', 0, 0)
         ON CONFLICT(domain) DO UPDATE SET
             gear=excluded.gear, selectors=excluded.selectors,
             wait_strategy=excluded.wait_strategy,
@@ -124,7 +170,8 @@ def record_success(
             success_count=excluded.success_count, fail_count=excluded.fail_count,
             last_success_at=excluded.last_success_at,
             confidence=excluded.confidence,
-            stale=0, unreachable_until=0
+            stale=0, unreachable_until=0,
+            circuit_state='closed', circuit_opened_at=0, consecutive_failures=0
         """,
         (domain, gear, selectors, wait_strategy,
          int(needs_account_val), int(needs_proxy), sc, fc, now, conf),
@@ -138,7 +185,7 @@ def record_failure(
     error: str = "",
     mark_unreachable: bool = False,
 ) -> None:
-    """失败回写: 更新 fail_count + 置信度, 可选标 unreachable。"""
+    """失败回写: 更新 fail_count + 置信度 + Circuit Breaker, 可选标 unreachable。"""
     from datetime import datetime
     now = datetime.now(UTC).isoformat(timespec="seconds")
     existing = get(conn, domain)
@@ -152,20 +199,56 @@ def record_failure(
     elif existing and existing.unreachable_until:
         unreachable = existing.unreachable_until
 
+    # Circuit Breaker: 连续失败计数 + 三态转换
+    prev_state = existing.circuit_state if existing else "closed"
+    prev_failures = existing.consecutive_failures if existing else 0
+    new_failures = prev_failures + 1
+    circuit_state = prev_state
+    circuit_opened_at = existing.circuit_opened_at if existing else 0
+
+    if prev_state == "half_open":
+        # 探测失败 → 重新 open
+        circuit_state = "open"
+        circuit_opened_at = int(time.time())
+        new_failures = 1
+        # P2: 状态转换写 audit_log
+        try:
+            from trawler import audit
+            audit.write_audit(conn, tool="circuit_breaker", url=domain,
+                              status="half_open_to_open", rung_used=error[:50])
+        except Exception:
+            pass
+    elif new_failures >= config.CIRCUIT_BREAKER_THRESHOLD:
+        # 连续失败达阈值 → open
+        circuit_state = "open"
+        circuit_opened_at = int(time.time())
+        # P2: 状态转换写 audit_log
+        try:
+            from trawler import audit
+            audit.write_audit(conn, tool="circuit_breaker", url=domain,
+                              status="closed_to_open", rung_used=error[:50])
+        except Exception:
+            pass
+
     conn.execute(
         """
         INSERT INTO domain_rules (domain, success_count, fail_count,
-            last_failed_at, last_error, confidence, stale, unreachable_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            last_failed_at, last_error, confidence, stale, unreachable_until,
+            circuit_state, circuit_opened_at, consecutive_failures)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(domain) DO UPDATE SET
             fail_count=excluded.fail_count,
             last_failed_at=excluded.last_failed_at,
             last_error=excluded.last_error,
             confidence=excluded.confidence,
             stale=excluded.stale,
-            unreachable_until=excluded.unreachable_until
+            unreachable_until=excluded.unreachable_until,
+            circuit_state=excluded.circuit_state,
+            circuit_opened_at=excluded.circuit_opened_at,
+            consecutive_failures=excluded.consecutive_failures
         """,
-        (domain, sc, fc, now, error, conf, stale, unreachable),
+        (domain, sc, fc, now, error, conf, stale, unreachable,
+         circuit_state, circuit_opened_at, new_failures),
     )
 
 

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 
@@ -56,8 +57,17 @@ class _TransientError(Exception):
 # curl_cffi 内置 chrome99-146 的 TLS+HTTP/2 指纹库; 131 是 2026 Q1 稳定版, JA4 匹配度高。
 # 注意: profile 必须与 UA 一致, 否则 JA4 与 UA 矛盾反而暴露。这里 curl_cffi 自动一致。
 _DEFAULT_IMPERSONATE = "chrome131"
+# TLS 指纹池: chrome100~146 覆盖 2024-2026 主流版本, 按 session_id 粘性轮换。
+# 粘性保证同会话指纹一致 (避免同会话 JA4 跳变暴露), 跨会话轮换分散特征。
+_IMPERSONATE_POOL = [
+    "chrome100", "chrome101", "chrome104", "chrome107", "chrome110",
+    "chrome116", "chrome119", "chrome120", "chrome123", "chrome124",
+    "chrome131", "chrome133", "chrome136", "chrome140", "chrome146",
+]
 
 _session_pool: dict[str, AsyncSession] = {}
+_session_pool_keys: list[str] = []  # LRU 顺序追踪 (最老在前)
+_SESSION_POOL_MAX = 10  # 池上限, 防无界内存增长 (违反硬约束的 bug 修复)
 _session_lock = asyncio.Lock()
 
 async def _get_session(
@@ -65,15 +75,46 @@ async def _get_session(
     proxy: str | None,
     session_id: str | None = None,
 ) -> AsyncSession:
-    """获取或创建一个缓存的 AsyncSession，按 impersonate 和 proxy 隔离。"""
+    """获取或创建一个缓存的 AsyncSession，按 impersonate/proxy/session_id 隔离。
+
+    LRU 淘汰: 池满时关闭并移除最久未用的 session, 防无界内存增长。
+    MRU 提升: 命中时移到末尾, 保持热会话存活。
+    """
     if not CURLCFFI_AVAILABLE:
         raise RuntimeError("curl_cffi not installed")
-    
+
     key = f"{impersonate}|{proxy or ''}|{session_id or ''}"
     async with _session_lock:
-        if key not in _session_pool:
-            _session_pool[key] = AsyncSession(impersonate=impersonate, verify=True)
+        if key in _session_pool:
+            # MRU: 移到末尾
+            _session_pool_keys.remove(key)
+            _session_pool_keys.append(key)
+            return _session_pool[key]
+        # LRU 淘汰: 池满时关最老的
+        if len(_session_pool) >= _SESSION_POOL_MAX:
+            oldest_key = _session_pool_keys.pop(0)
+            oldest_session = _session_pool.pop(oldest_key, None)
+            if oldest_session is not None:
+                try:
+                    await oldest_session.close()
+                except Exception:
+                    pass
+        _session_pool[key] = AsyncSession(impersonate=impersonate, verify=True)
+        _session_pool_keys.append(key)
         return _session_pool[key]
+
+
+async def shutdown_sessions() -> None:
+    """关闭所有缓存的 curl_cffi session (供 signals/lifecycle 调用)。"""
+    global _session_pool, _session_pool_keys
+    async with _session_lock:
+        for session in _session_pool.values():
+            try:
+                await session.close()
+            except Exception:
+                pass
+        _session_pool.clear()
+        _session_pool_keys.clear()
 
 
 @dataclass
@@ -83,10 +124,24 @@ class _FetchConfig:
     verify: bool = True
 
 
-def _resolve_impersonate() -> str:
-    """允许 env 覆盖 impersonate target (应对 curl_cffi profile 失效时快速切换)。"""
+def _resolve_impersonate(session_id: str = "") -> str:
+    """解析 impersonate target。
+
+    优先级: env TRAWLER_CURLCFFI_IMPERSONATE (单值, 应急) > 指纹池轮换 > 默认 chrome131。
+    池轮换: TRAWLER_CURLCFFI_FINGERPRINT_POOL=true 启用, 按 session_id 粘性选择。
+    粘性保证同会话指纹一致 (JA4 不跳变), 跨会话分散特征。
+    """
     import os
-    return os.getenv("TRAWLER_CURLCFFI_IMPERSONATE", _DEFAULT_IMPERSONATE)
+    explicit = os.getenv("TRAWLER_CURLCFFI_IMPERSONATE")
+    if explicit:
+        return explicit
+    if os.getenv("TRAWLER_CURLCFFI_FINGERPRINT_POOL", "").lower() not in ("1", "true", "yes", "on"):
+        return _DEFAULT_IMPERSONATE
+    if not session_id:
+        import random
+        return random.choice(_IMPERSONATE_POOL)
+    idx = int(hashlib.sha1(session_id.encode()).hexdigest()[:8], 16) % len(_IMPERSONATE_POOL)
+    return _IMPERSONATE_POOL[idx]
 
 
 async def fetch(
@@ -114,7 +169,7 @@ async def fetch(
         return result
 
     timeout_val = timeout or config.JINA_TIMEOUT  # 复用 15s 默认 (curl_cffi 比 patchright 快得多)
-    impersonate = _resolve_impersonate()
+    impersonate = _resolve_impersonate(session_id or "")
 
     proxy = None
     if use_proxy:
