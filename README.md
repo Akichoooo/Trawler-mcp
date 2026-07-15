@@ -40,7 +40,7 @@ uv run --extra dev python -m pytest
   "mcpServers": {
     "trawler": {
       "command": "uv",
-      "args": ["--directory", "./", "run", "trawler"]
+      "args": ["--directory", "<path-to-trawler-mcp>", "run", "trawler"]
     }
   }
 }
