@@ -1,10 +1,10 @@
-# Trawler-mcp
+﻿# Trawler-mcp
 
-项目总览：[docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md)
+项目总览：[docs/00_项目总览.md](./docs/00_项目总览.md)
 
 > **拖网渔船** — 纯爬虫薄壳 MCP server。给 AI agent 从网页抓取干净 markdown 正文,存成 raw 文件交给下游"图书馆"模块处理。
 
-零 LLM。设计宪法见 [DESIGN.md](./DESIGN.md)。
+零 LLM。设计宪法见 [设计宪法.md](./设计宪法.md)。
 
 ## 安装
 
