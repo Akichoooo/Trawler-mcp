@@ -220,6 +220,7 @@ async def crawl_url(
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     ignore_query_parameters: bool = False,
+    keywords: dict | None = None,
     conn=None,
 ) -> str:
     """抓单页。永远返回字符串。≤35s。"""
@@ -269,6 +270,7 @@ async def crawl_url(
                 include_paths=include_paths or [],
                 exclude_paths=exclude_paths or [],
                 ignore_query_parameters=ignore_query_parameters,
+                keywords=keywords,
                 conn=conn,
             ),
             timeout=timeout_val,
@@ -321,6 +323,7 @@ async def _crawl_url_inner(
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     ignore_query_parameters: bool = False,
+    keywords: dict | None = None,
     conn=None,
 ) -> str:
     # 限制同域名并发: 用记录上次请求时间+sleep的方式, 避免长请求阻塞排队
@@ -355,6 +358,7 @@ async def _crawl_url_inner(
                     include_paths=include_paths or [],
                     exclude_paths=exclude_paths or [],
                     ignore_query_parameters=ignore_query_parameters,
+                    keywords=keywords,
                     conn=conn,
                 )
             except Exception as e:
@@ -403,6 +407,7 @@ async def _do_crawl(
     include_paths: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     ignore_query_parameters: bool = False,
+    keywords: dict | None = None,
     conn=None,
 ) -> str:
     # ② URL 规范化
@@ -708,6 +713,36 @@ async def _do_crawl(
             "Parsers extracted no text. This usually means a block or unsupported SPA.",
             artifact_id=artifact_id,
         )
+
+    # ⑧.5 关键词过滤 (Parser 后, 存 raw 前)
+    # 优先级: 临时 (keywords 参数) > 域级 (DB) > 全局 (DB)
+    kw_rules: list = []
+    if keywords and isinstance(keywords, dict) and (keywords.get("include") or keywords.get("exclude") or keywords.get("regex")):
+        from trawler.keyword_rules import make_temporary_rule
+        kw_rules.append(make_temporary_rule(
+            include=keywords.get("include"),
+            exclude=keywords.get("exclude"),
+            regex=keywords.get("regex"),
+        ))
+    try:
+        from trawler.keyword_rules import KeywordMatcher, load_rules_for_domain
+        kw_rules.extend(load_rules_for_domain(conn, domain))
+    except Exception as e:
+        log.warning("Failed to load keyword rules for %s: %s", domain, e)
+    if kw_rules:
+        passed, kw_reason = await asyncio.to_thread(KeywordMatcher.match, md, kw_rules)
+        if not passed:
+            await _db_write(audit.write_audit, conn, tool="crawl_url",
+                                     url=url, status="keyword_blocked", rung_used=gear_used)
+            await asyncio.to_thread(save_blocked, raw_id, url=url,
+                                     reason=f"keyword filter: {kw_reason}",
+                                     html_excerpt=md[:5000], gear_used=gear_used,
+                                     metadata={"keyword_filter": kw_reason})
+            return _format_error(
+                "keyword-filtered",
+                f"Content blocked by keyword rule: {kw_reason}",
+                url=url,
+            )
 
     # ⑨ title
     title = await asyncio.to_thread(parser_title.extract_title, html, final_url or url)

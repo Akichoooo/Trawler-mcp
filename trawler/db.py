@@ -175,6 +175,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "consecutive_failures" not in cols:
         conn.execute("ALTER TABLE domain_rules ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
 
+    # keyword_rules 表 (关键词过滤机制)
+    from trawler import keyword_rules
+    keyword_rules.init_schema(conn)
+
 
 @contextmanager
 def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:

@@ -564,6 +564,7 @@ async def crawl_url(
     mode: Annotated[str, Field(description="Output mode: 'full' (default), 'toc' (table of contents), 'section' (specific section), or 'chunk' (token slice)", default="full")] = "full",
     section_id: Annotated[str, Field(description="Section ID or heading keyword (used with mode='section')", default="")] = "",
     chunk_index: Annotated[int, Field(description="Chunk page index (1-based, used with mode='chunk')", default=1)] = 1,
+    keywords: Annotated[dict | None, Field(description="Temporary keyword filter for this call. Format: {\"include\": [...], \"exclude\": [...], \"regex\": [...]}. include=must match at least one; exclude=reject if any matches; regex=pattern match", default=None)] = None,
 ) -> str:
     decision = _policy_check(
         "crawl_url",
@@ -594,6 +595,7 @@ async def crawl_url(
             mode=mode,
             section_id=section_id,
             chunk_index=chunk_index,
+            keywords=keywords,
         )
 
 
@@ -1824,6 +1826,215 @@ async def recent_scrapes_resource() -> str:
 
     lines = [f"{r['url']}\t→ {r['raw_id']} (crawled: {r['crawled_at']})" for r in rows]
     return f"Recent scrapes ({len(rows)}):\n" + "\n".join(lines)
+
+
+# ── 关键词规则 Resource ───────────────────────────────────────────
+
+@mcp.resource("keyword-rules://{scope}")
+async def keyword_rules_resource(scope: str) -> str:
+    """List keyword rules by scope. Use 'all' for everything, 'global' for global rules,
+    or 'domain:example.com' for domain-specific rules.
+
+    Application-controlled resource: clients can read this without LLM tool calls.
+    """
+    import asyncio
+    import json as _json
+    from trawler import keyword_rules
+
+    def _query():
+        conn = db.connect()
+        try:
+            if scope == "all":
+                rules = keyword_rules.list_rules(conn)
+            else:
+                rules = keyword_rules.list_rules(conn, scope=scope)
+            return rules
+        finally:
+            conn.close()
+
+    try:
+        rules = await asyncio.to_thread(_query)
+    except Exception:
+        return format_error("internal-error", "Failed to query keyword rules")
+
+    payload = {
+        "total": len(rules),
+        "rules": [r.to_dict() for r in rules],
+    }
+    return _json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+# ── 关键词规则 Tool (CRUD + 测试) ─────────────────────────────────
+
+@mcp.tool(
+    description="List all keyword filter rules. Optional scope filter: 'global' or 'domain:example.com'. "
+    "Returns JSON with rule details (include/exclude/regex/enabled/scope)."
+)
+async def list_keyword_rules(
+    scope: Annotated[str, Field(description="Optional scope filter: 'global' or 'domain:example.com'. Empty = all.", default="")] = "",
+) -> str:
+    import asyncio
+    import json as _json
+    from trawler import keyword_rules
+
+    def _query():
+        conn = db.connect()
+        try:
+            return keyword_rules.list_rules(conn, scope=scope) if scope else keyword_rules.list_rules(conn)
+        finally:
+            conn.close()
+
+    rules = await asyncio.to_thread(_query)
+    payload = {"ok": True, "count": len(rules), "rules": [r.to_dict() for r in rules]}
+    return format_ok(_json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@mcp.tool(
+    description="Add a keyword filter rule. The rule persists in DB and applies to future crawl_url calls. "
+    "include: content must contain at least one (OR). exclude: reject if any matches. "
+    "regex: pattern match (counts as include). scope: 'global' or 'domain:example.com'."
+)
+async def add_keyword_rule(
+    name: Annotated[str, Field(description="Unique rule name")],
+    include: Annotated[list[str], Field(description="Keywords that must appear (OR logic). Empty = no include requirement.", default_factory=list)] = None,
+    exclude: Annotated[list[str], Field(description="Keywords that cause rejection if any matches.", default_factory=list)] = None,
+    regex: Annotated[list[str], Field(description="Regex patterns to match (counts as include).", default_factory=list)] = None,
+    case_sensitive: Annotated[bool, Field(description="Case-sensitive matching", default=False)] = False,
+    match_position: Annotated[str, Field(description="'any' (default), 'title' (first line only), or 'body' (after first line)", default="any")] = "any",
+    scope: Annotated[str, Field(description="'global' for all domains, or 'domain:example.com' for specific domain", default="global")] = "global",
+    notes: Annotated[str, Field(description="Optional notes for this rule", default="")] = "",
+) -> str:
+    import asyncio
+    import json as _json
+    from trawler import keyword_rules
+
+    rule = keyword_rules.KeywordRule(
+        name=name,
+        include=include or [],
+        exclude=exclude or [],
+        regex=regex or [],
+        case_sensitive=case_sensitive,
+        match_position=match_position,
+        scope=scope,
+        notes=notes,
+    )
+
+    def _add():
+        conn = db.connect()
+        try:
+            keyword_rules.add_rule(conn, rule)
+        finally:
+            conn.close()
+
+    try:
+        await asyncio.to_thread(_add)
+    except ValueError as e:
+        return format_error("invalid-mode", str(e))
+    return format_ok(_json.dumps({"ok": True, "rule": rule.to_dict()}, ensure_ascii=False, indent=2))
+
+
+@mcp.tool(
+    description="Update a keyword filter rule (partial update). Only provided fields are changed."
+)
+async def update_keyword_rule(
+    name: Annotated[str, Field(description="Rule name to update")],
+    include: Annotated[list[str] | None, Field(description="New include keywords", default=None)] = None,
+    exclude: Annotated[list[str] | None, Field(description="New exclude keywords", default=None)] = None,
+    regex: Annotated[list[str] | None, Field(description="New regex patterns", default=None)] = None,
+    case_sensitive: Annotated[bool | None, Field(description="Case-sensitive flag", default=None)] = None,
+    match_position: Annotated[str | None, Field(description="'any', 'title', or 'body'", default=None)] = None,
+    enabled: Annotated[bool | None, Field(description="Enable/disable rule", default=None)] = None,
+    scope: Annotated[str | None, Field(description="New scope", default=None)] = None,
+    notes: Annotated[str | None, Field(description="New notes", default=None)] = None,
+) -> str:
+    import asyncio
+    import json as _json
+    from trawler import keyword_rules
+
+    fields: dict = {}
+    for k, v in {
+        "include": include, "exclude": exclude, "regex": regex,
+        "case_sensitive": case_sensitive, "match_position": match_position,
+        "enabled": enabled, "scope": scope, "notes": notes,
+    }.items():
+        if v is not None:
+            fields[k] = v
+
+    def _update():
+        conn = db.connect()
+        try:
+            return keyword_rules.update_rule(conn, name, **fields)
+        finally:
+            conn.close()
+
+    rule = await asyncio.to_thread(_update)
+    if not rule:
+        return format_error("raw-not-found", f"keyword rule not found: {name}")
+    return format_ok(_json.dumps({"ok": True, "rule": rule.to_dict()}, ensure_ascii=False, indent=2))
+
+
+@mcp.tool(
+    description="Delete a keyword filter rule by name."
+)
+async def delete_keyword_rule(
+    name: Annotated[str, Field(description="Rule name to delete")],
+) -> str:
+    import asyncio
+    from trawler import keyword_rules
+
+    def _delete():
+        conn = db.connect()
+        try:
+            return keyword_rules.delete_rule(conn, name)
+        finally:
+            conn.close()
+
+    deleted = await asyncio.to_thread(_delete)
+    if not deleted:
+        return format_error("raw-not-found", f"keyword rule not found: {name}")
+    return format_ok(f"Keyword rule {name!r} deleted.")
+
+
+@mcp.tool(
+    description="Test keyword rules against sample text (dry run, no DB write). "
+    "Returns pass/fail status and which keywords matched."
+)
+async def test_keyword_rules(
+    text: Annotated[str, Field(description="Text to test against")],
+    include: Annotated[list[str], Field(description="Include keywords (OR logic)", default_factory=list)] = None,
+    exclude: Annotated[list[str], Field(description="Exclude keywords (reject if any match)", default_factory=list)] = None,
+    regex: Annotated[list[str], Field(description="Regex patterns", default_factory=list)] = None,
+    case_sensitive: Annotated[bool, Field(description="Case-sensitive matching", default=False)] = False,
+    match_position: Annotated[str, Field(description="'any', 'title', or 'body'", default="any")] = "any",
+) -> str:
+    import asyncio
+    import json as _json
+    from trawler import keyword_rules
+
+    rule = keyword_rules.KeywordRule(
+        name="__test__",
+        include=include or [],
+        exclude=exclude or [],
+        regex=regex or [],
+        case_sensitive=case_sensitive,
+        match_position=match_position,
+    )
+    matcher = keyword_rules.KeywordMatcher()
+    passed, reason = await asyncio.to_thread(matcher.match, text, [rule])
+
+    # 命中详情
+    flags = 0 if case_sensitive else __import__("re").IGNORECASE
+    inc_hits = [k for k in (include or []) if __import__("re").search(__import__("re").escape(k), text, flags)]
+    exc_hits = [k for k in (exclude or []) if __import__("re").search(__import__("re").escape(k), text, flags)]
+
+    payload = {
+        "ok": True,
+        "passed": passed,
+        "reason": reason,
+        "include_hits": inc_hits,
+        "exclude_hits": exc_hits,
+    }
+    return format_ok(_json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 # ── 启动钩子 ──────────────────────────────────────────────────────

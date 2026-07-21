@@ -46,6 +46,10 @@ ERROR_GUIDANCE = {
     "raw-not-found": "call list_raw and use an existing raw_id",
     "permission-denied": "use a raw_id or artifact_id inside Trawler storage",
     "section-not-found": "call mode='toc' first and use an existing section id",
+    "keyword-filtered": (
+        "content did not match keyword rules (include/exclude/regex); "
+        "adjust keywords or use a different URL"
+    ),
 }
 
 
@@ -136,4 +140,5 @@ VALID_ERROR_TYPES = [
     "raw-not-found",
     "permission-denied",
     "section-not-found",
+    "keyword-filtered",
 ]
