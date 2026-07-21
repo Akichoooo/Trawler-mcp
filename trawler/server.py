@@ -1896,9 +1896,9 @@ async def list_keyword_rules(
 )
 async def add_keyword_rule(
     name: Annotated[str, Field(description="Unique rule name")],
-    include: Annotated[list[str], Field(description="Keywords that must appear (OR logic). Empty = no include requirement.", default_factory=list)] = None,
-    exclude: Annotated[list[str], Field(description="Keywords that cause rejection if any matches.", default_factory=list)] = None,
-    regex: Annotated[list[str], Field(description="Regex patterns to match (counts as include).", default_factory=list)] = None,
+    include: Annotated[list[str] | None, Field(description="Keywords that must appear (OR logic). Empty = no include requirement.", default=None)] = None,
+    exclude: Annotated[list[str] | None, Field(description="Keywords that cause rejection if any matches.", default=None)] = None,
+    regex: Annotated[list[str] | None, Field(description="Regex patterns to match (counts as include).", default=None)] = None,
     case_sensitive: Annotated[bool, Field(description="Case-sensitive matching", default=False)] = False,
     match_position: Annotated[str, Field(description="'any' (default), 'title' (first line only), or 'body' (after first line)", default="any")] = "any",
     scope: Annotated[str, Field(description="'global' for all domains, or 'domain:example.com' for specific domain", default="global")] = "global",
@@ -2001,9 +2001,9 @@ async def delete_keyword_rule(
 )
 async def test_keyword_rules(
     text: Annotated[str, Field(description="Text to test against")],
-    include: Annotated[list[str], Field(description="Include keywords (OR logic)", default_factory=list)] = None,
-    exclude: Annotated[list[str], Field(description="Exclude keywords (reject if any match)", default_factory=list)] = None,
-    regex: Annotated[list[str], Field(description="Regex patterns", default_factory=list)] = None,
+    include: Annotated[list[str] | None, Field(description="Include keywords (OR logic)", default=None)] = None,
+    exclude: Annotated[list[str] | None, Field(description="Exclude keywords (reject if any match)", default=None)] = None,
+    regex: Annotated[list[str] | None, Field(description="Regex patterns", default=None)] = None,
     case_sensitive: Annotated[bool, Field(description="Case-sensitive matching", default=False)] = False,
     match_position: Annotated[str, Field(description="'any', 'title', or 'body'", default="any")] = "any",
 ) -> str:
