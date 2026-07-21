@@ -1,4 +1,4 @@
-﻿# Trawler-mcp
+# Trawler-mcp
 
 项目总览：[docs/00_项目总览.md](./docs/00_项目总览.md)
 
@@ -31,19 +31,48 @@ uv run python -m trawler
 uv run --extra dev python -m pytest
 ```
 
-## 接入 Cursor / Claude Desktop
+## 接入 Cursor / Claude Desktop / TRAE
 
-在 MCP 配置 (Cursor: `~/.cursor/mcp.json`, Claude Desktop: `claude_desktop_config.json`):
+### 方式 1: 项目内自动配置 (推荐)
+
+仓库根目录已包含 `.mcp.json`。用 Cursor / Claude Code / TRAE 打开本项目文件夹,客户端自动发现并加载 Trawler MCP,无需手动配置。
+
+### 方式 2: 手动配置 (适用于不想 clone 源码的场景)
+
+在 MCP 配置 (Cursor: `~/.cursor/mcp.json`, Claude Desktop: `claude_desktop_config.json`, TRAE: `.trae/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "trawler": {
       "command": "uv",
-      "args": ["--directory", "<path-to-trawler-mcp>", "run", "trawler"]
+      "args": ["--directory", "/path/to/Trawler-mcp", "run", "trawler"],
+      "env": {
+        "TRAWLER_VAULT_KEY": "your-fernet-key"
+      }
     }
   }
 }
+```
+
+> `TRAWLER_VAULT_KEY` 生成: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+> 不设则跳过 HITL 账号态路径,容器仍可启动做无账号爬取。
+
+### 方式 3: 一键安装 (给其他用户)
+
+```bash
+# 1. clone
+git clone https://github.com/Akichoooo/Trawler-mcp.git
+cd Trawler-mcp
+
+# 2. 安装依赖 (二选一)
+uv sync                           # 轻量核心 (纯 API 抓取)
+uv sync --extra heavy             # 完整能力 (含浏览器渲染)
+
+# 3. (可选) 安装浏览器
+patchright install chrome
+
+# 4. 用 MCP 客户端打开本目录,自动加载 .mcp.json
 ```
 
 ## 工具

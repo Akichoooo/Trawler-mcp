@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "trawler": {
+      "command": "uv",
+      "args": ["--directory", ".", "run", "trawler"],
+      "env": {
+        "TRAWLER_VAULT_KEY": "change-me"
+      }
+    }
+  }
+}
